@@ -4,6 +4,9 @@ Multi-chain (Solana, Base, BSC; Arbitrum later) short-term DEX trading system. *
 
 - [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md): design, credentials, provider limits, schema and phase plan
 - [docs/PROGRESS.md](docs/PROGRESS.md): what is done, what was verified, and known issues
+- [docs/AUDIT.md](docs/AUDIT.md): audit of the Phase 1 layer and the paper stack
+- [docs/backtest-results.json](docs/backtest-results.json): latest backtest, written by the command below
+- [docs/strategy_validation.json](docs/strategy_validation.json): which strategies the paper runner is allowed to open
 
 ## Requirements
 
@@ -60,3 +63,79 @@ export DEXBOT_DATABASE_URL=postgresql+asyncpg://dexbot:dexbot@localhost:5432/dex
 ```
 
 The database URL always comes from `DEXBOT_DATABASE_URL`; `alembic.ini` holds no credentials.
+
+## Run without Docker
+
+Postgres and Redis listen on 127.0.0.1. The API does not use Redis yet (the cache and rate limits are in-process); it still expects the URL, and a later phase will share the GeckoTerminal budget through Redis. Do not run a second heavy GeckoTerminal client (the paper runner and a polling client) at the same time: keyless GeckoTerminal is about 5 calls per minute per IP.
+
+```bash
+# Debian/Ubuntu. Other systems: create the same role and databases.
+sudo apt-get install -y postgresql redis-server python3.12-venv
+sudo pg_ctlcluster 16 main start    # or: sudo service postgresql start
+sudo service redis-server start
+
+sudo -u postgres psql -c "CREATE ROLE dexbot LOGIN PASSWORD 'dexbot';"
+sudo -u postgres createdb -O dexbot dexbot
+sudo -u postgres createdb -O dexbot dexbot_test
+
+cd backend
+python3 -m venv .venv
+.venv/bin/pip install -e ".[dev]"
+export DEXBOT_DATABASE_URL=postgresql+asyncpg://dexbot:dexbot@127.0.0.1:5432/dexbot
+export DEXBOT_REDIS_URL=redis://127.0.0.1:6379/0
+.venv/bin/alembic upgrade head
+.venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 8000
+```
+
+`GET /health` should report `"mode": "paper"` and `"execution": "disabled"`.
+
+## Backtest
+
+Fetches real 5-minute OHLCV from GeckoTerminal (trending alt pools on the enabled chains) and runs momentum, volume-spike, breakout and mean reversion. Fees, per-chain gas and size-dependent slippage are applied. A strategy is kept only when it has at least 20 trades, positive expectancy after costs, profit factor above 1, and max drawdown under 25% of the $1,000 book. Win rate is not the criterion. The run takes a few minutes because of the keyless rate limit.
+
+```bash
+cd backend
+export DEXBOT_LOG_LEVEL=WARNING DEXBOT_LOG_JSON=false
+.venv/bin/python -m app.backtest --per-chain 3 --limit 1000
+```
+
+This writes `docs/backtest-results.json` and `docs/strategy_validation.json`. If nothing passes, the paper runner will scan and screen but will not open positions.
+
+## Paper runner
+
+Simulated starting balance defaults to $1,000 (`DEXBOT_PAPER_STARTING_BALANCE_USD`, or `--balance` the first time the account is created). Fills include the pool fee, gas and slippage. Restarts do not reset the book.
+
+```bash
+cd backend
+export DEXBOT_DATABASE_URL=postgresql+asyncpg://dexbot:dexbot@127.0.0.1:5432/dexbot
+.venv/bin/python -m app.paper --once     # one scan
+.venv/bin/python -m app.paper            # loop (default every 90s)
+```
+
+Default risk limits (override with `DEXBOT_RISK_*` in `.env.example`; averaging down and martingale cannot be turned on):
+
+| Limit | Default |
+|---|---|
+| Max position | $50 |
+| Max exposure | $300 |
+| Max concurrent positions | 5 |
+| Max daily loss (kill switch, resets next UTC day) | $50 |
+| Gas reserve left in cash | $5 |
+| Stop / take-profit / time stop | 8% / 15% / 240 minutes |
+| Cooldown | 15 minutes after 2 consecutive losses |
+| Max estimated slippage | 200 bps |
+| Min liquidity / h1 volume / age | $20,000 / $5,000 / 30 minutes |
+| Max buy or sell tax | 10% |
+
+Screening uses RugCheck for Solana (GoPlus Solana if RugCheck is down) and GoPlus for Base, BSC and Arbitrum. A missing critical check blocks the entry.
+
+## Dashboard
+
+With uvicorn running:
+
+- http://127.0.0.1:8000/dashboard
+- http://127.0.0.1:8000/api/paper/summary
+- http://127.0.0.1:8000/api/paper/positions
+- http://127.0.0.1:8000/api/paper/strategies
+
+The page is labelled PAPER. Simulated balance is mark-to-market equity. Realised P&L is closed round trips. Unrealised P&L is an estimated exit (fee, slippage, gas) on open positions, so a new position is negative until price moves enough to pay the exit. Net P&L is the sum of the two.

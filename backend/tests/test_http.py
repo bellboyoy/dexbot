@@ -53,6 +53,20 @@ async def test_ttl_cache_evicts_oldest(clock):
     assert await c.get("a") is None and await c.get("c") == "c"
 
 
+def test_half_open_allows_a_single_probe(clock):
+    breaker = CircuitBreaker(threshold=1, cooldown_s=30, clock=clock)
+    breaker.record_failure()
+    assert not breaker.allow()
+    clock.advance(30)
+    assert breaker.state == "half_open"
+    assert breaker.allow() is True
+    assert breaker.allow() is False
+    breaker.release_probe()
+    assert breaker.allow() is True
+    breaker.record_failure()
+    assert breaker.state == "open"
+
+
 def test_circuit_breaker_cycle(clock):
     b = CircuitBreaker(threshold=2, cooldown_s=30, clock=clock)
     b.record_failure()

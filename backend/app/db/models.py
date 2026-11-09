@@ -1,12 +1,12 @@
 """SQLAlchemy models for the PostgreSQL schema (see docs/ARCHITECTURE.md §5)."""
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import date, datetime
 from decimal import Decimal
 from typing import Any
 
 from sqlalchemy import (
-    BigInteger, Boolean, DateTime, Enum, ForeignKey, Index, Integer, Numeric, String, Text,
+    BigInteger, Boolean, Date, DateTime, Enum, ForeignKey, Index, Integer, Numeric, String, Text,
     UniqueConstraint, func,
 )
 from sqlalchemy.dialects.postgresql import JSONB
@@ -16,6 +16,7 @@ from app.domain.chains import Chain
 
 USD = Numeric(38, 18)
 RAW = Numeric(78, 0)          # fits uint256
+FEE_RATE = Numeric(12, 8)
 CHAIN = Enum(Chain, name="chain", values_callable=lambda e: [m.value for m in e])
 
 
@@ -156,6 +157,12 @@ class Position(Timestamps, Base):
     fees_usd: Mapped[Decimal] = mapped_column(USD, default=0)
     gas_usd: Mapped[Decimal] = mapped_column(USD, default=0)
     net_pnl_usd: Mapped[Decimal | None] = mapped_column(USD)
+    # Paper ledger. Raw on-chain amounts stay null; token_qty is the simulated quantity.
+    token_qty: Mapped[Decimal | None] = mapped_column(USD)
+    mark_price_usd: Mapped[Decimal | None] = mapped_column(USD)
+    unrealized_pnl_usd: Mapped[Decimal | None] = mapped_column(USD)
+    entry_liquidity_usd: Mapped[Decimal | None] = mapped_column(USD)
+    fee_rate: Mapped[Decimal | None] = mapped_column(FEE_RATE)
 
 
 class Trade(Base):
@@ -172,6 +179,7 @@ class Trade(Base):
     gas_usd: Mapped[Decimal] = mapped_column(USD)
     slippage_bps: Mapped[int | None] = mapped_column(Integer)
     price_impact_bps: Mapped[int | None] = mapped_column(Integer)
+    slippage_usd: Mapped[Decimal | None] = mapped_column(USD)
     executed_at: Mapped[datetime]
     created_at: Mapped[datetime] = mapped_column(server_default=func.now())
 
@@ -189,6 +197,30 @@ class Transaction(Timestamps, Base):
     nonce: Mapped[int | None] = mapped_column(BigInteger)
     error: Mapped[str | None] = mapped_column(Text)
     details: Mapped[dict[str, Any] | None]
+
+
+class PaperAccount(Timestamps, Base):
+    """One simulated cash account. `mode` is written as paper and the runner refuses anything else."""
+    __tablename__ = "paper_accounts"
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    name: Mapped[str] = mapped_column(String(64), unique=True)
+    mode: Mapped[str] = mapped_column(String(8))
+    starting_balance_usd: Mapped[Decimal] = mapped_column(USD)
+    cash_usd: Mapped[Decimal] = mapped_column(USD)
+    realized_pnl_usd: Mapped[Decimal] = mapped_column(USD)
+    fees_usd: Mapped[Decimal] = mapped_column(USD)
+    gas_usd: Mapped[Decimal] = mapped_column(USD)
+    slippage_usd: Mapped[Decimal] = mapped_column(USD)
+    day_utc: Mapped[date] = mapped_column(Date)
+    day_realized_pnl_usd: Mapped[Decimal] = mapped_column(USD)
+    consecutive_losses: Mapped[int] = mapped_column(Integer)
+    cooldown_until: Mapped[datetime | None]
+    kill_switch: Mapped[bool] = mapped_column(Boolean)
+    kill_reason: Mapped[str | None] = mapped_column(Text)
+    last_scan_at: Mapped[datetime | None]
+    last_error: Mapped[str | None] = mapped_column(Text)
+    scan_count: Mapped[int] = mapped_column(Integer)
+    last_cycle: Mapped[dict[str, Any] | None]
 
 
 class PortfolioBalance(Base):

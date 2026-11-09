@@ -1,6 +1,7 @@
 """Environment-based configuration. Every setting is prefixed DEXBOT_."""
 from __future__ import annotations
 
+from decimal import Decimal
 from enum import StrEnum
 from functools import lru_cache
 
@@ -50,6 +51,29 @@ class Settings(BaseSettings):
     zerox_api_key: SecretStr | None = None
     jupiter_api_key: SecretStr | None = None
     goplus_api_key: SecretStr | None = None
+
+    # Paper ledger and risk limits. These cannot enable live trading.
+    paper_starting_balance_usd: Decimal = Decimal("1000")
+    paper_scan_interval_s: float = 90.0
+    paper_max_security_checks: int = 3
+    paper_max_ohlcv_per_cycle: int = 1
+    risk_max_position_usd: Decimal = Decimal("50")
+    risk_max_exposure_usd: Decimal = Decimal("300")
+    risk_max_concurrent_positions: int = 5
+    risk_max_daily_loss_usd: Decimal = Decimal("50")
+    risk_gas_reserve_usd: Decimal = Decimal("5")
+    risk_stop_loss_pct: Decimal = Decimal("0.08")
+    risk_take_profit_pct: Decimal = Decimal("0.15")
+    risk_max_hold_minutes: int = 240
+    risk_cooldown_losses: int = 2
+    risk_cooldown_seconds: int = 900
+    risk_max_slippage_bps: int = 200
+    screen_min_liquidity_usd: Decimal = Decimal("20000")
+    screen_min_volume_h1_usd: Decimal = Decimal("5000")
+    screen_min_age_minutes: int = 30
+    screen_max_tax: Decimal = Decimal("0.10")
+    screen_lp_lock_young_hours: int = 72
+    screen_min_lp_locked_pct: Decimal = Decimal("80")
 
     @field_validator("enabled_chains", mode="before")
     @classmethod

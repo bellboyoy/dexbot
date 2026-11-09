@@ -44,22 +44,30 @@ class RateLimiter:
         self._last = now
 
     def penalize(self, seconds: float) -> None:
-        """Block all callers for `seconds` (used after a 429)."""
+        """Block all callers for `seconds` (used after a 429).
+
+        Called from the request path without awaiting, so it does not interleave with the
+        locked section of `acquire` on the asyncio thread.
+        """
         self._blocked_until = max(self._blocked_until, self._clock() + seconds)
         self._tokens = 0.0
 
     async def acquire(self) -> None:
-        async with self._lock:
-            while True:
+        # Sleep outside the lock. Holding it across sleep made every other caller wait
+        # out the first caller's full delay, and a 429 penalty could not be observed
+        # until that sleep finished.
+        while True:
+            async with self._lock:
                 now = self._clock()
                 if now < self._blocked_until:
-                    await asyncio.sleep(self._blocked_until - now)
-                    continue
-                self._refill()
-                if self._tokens >= 1:
-                    self._tokens -= 1
-                    return
-                await asyncio.sleep((1 - self._tokens) / self.refill_per_s)
+                    wait = self._blocked_until - now
+                else:
+                    self._refill()
+                    if self._tokens >= 1:
+                        self._tokens -= 1
+                        return
+                    wait = (1 - self._tokens) / self.refill_per_s
+            await asyncio.sleep(wait)
 
 
 class Cache(Protocol):
@@ -102,6 +110,7 @@ class CircuitBreaker:
         self._clock = clock
         self._failures = 0
         self._opened_at: float | None = None
+        self._probe_inflight = False
 
     @property
     def state(self) -> str:
@@ -112,15 +121,31 @@ class CircuitBreaker:
         return "open"
 
     def allow(self) -> bool:
-        return self.state != "open"
+        state = self.state
+        if state == "open":
+            return False
+        if state == "half_open":
+            # One probe at a time. A scan fan-out must not dump the full rate onto a
+            # provider that is only possibly back.
+            if self._probe_inflight:
+                return False
+            self._probe_inflight = True
+        return True
+
+    def release_probe(self) -> None:
+        """A 4xx is not a recovery signal and must not leave the probe stuck."""
+        self._probe_inflight = False
 
     def record_success(self) -> None:
         self._failures = 0
         self._opened_at = None
+        self._probe_inflight = False
 
     def record_failure(self) -> None:
+        half_open = self.state == "half_open"
+        self._probe_inflight = False
         self._failures += 1
-        if self.state == "half_open" or self._failures >= self.threshold:
+        if half_open or self._failures >= self.threshold:
             self._opened_at = self._clock()
 
 
@@ -232,6 +257,7 @@ class JsonHttpClient:
             if resp.status_code >= 400:
                 # Client errors are not retried and do not trip the breaker.
                 self._last_error = f"HTTP {resp.status_code}"
+                self.breaker.release_probe()
                 raise InvalidResponse(self.provider, f"HTTP {resp.status_code} on {path}: {resp.text[:200]}")
 
             try:

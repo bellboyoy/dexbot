@@ -1,0 +1,14 @@
+{
+  "generated_at": "2026-11-09T22:39:28.337359+00:00",
+  "passed": [],
+  "rejected": {
+    "mean_reversion": "net P&L after costs is not positive",
+    "breakout": "net P&L after costs is not positive",
+    "momentum": "net P&L after costs is not positive",
+    "volume_spike": "net P&L after costs is not positive"
+  },
+  "note": "The sample is a handful of pools that were trending or new when the backtest ran, with at most 1000 five-minute bars (about 3.5 days) from GeckoTerminal. Pools that already died are absent, so this is survivorship-biased. Liquidity is today's snapshot applied to every historical bar; past slippage is not reconstructed. Swap fees come from the pool when it publishes one, otherwise 30 bps per side, plus a fixed per-chain gas estimate. Parameters were set before this run and were not searched. A pass is positive expected value after costs on this sample only. It is not evidence of a durable edge.",
+  "source": "/workspace/docs/backtest-results.json",
+  "min_trades": 20,
+  "max_drawdown_fraction": "0.25"
+}
