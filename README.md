@@ -44,7 +44,7 @@ docker compose up -d postgres          # from the repo root
 docker compose exec postgres createdb -U dexbot dexbot_test
 DEXBOT_TEST_DATABASE_URL=postgresql+asyncpg://dexbot:dexbot@localhost:5432/dexbot_test .venv/bin/pytest -m postgres
 
-# 3. Live smoke test against DexScreener and GeckoTerminal (about 1 minute,
+# 3. Live smoke test against DexScreener and GeckoTerminal (1–2 minutes,
 #    because keyless GeckoTerminal allows only a few calls per minute)
 .venv/bin/pytest -m live
 ```
