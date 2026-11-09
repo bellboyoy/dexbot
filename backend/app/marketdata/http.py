@@ -149,6 +149,7 @@ class JsonHttpClient:
         timeout_s: float = 10.0,
         max_retries: int = 3,
         backoff_base_s: float = 1.0,
+        rate_limit_penalty_s: float = 5.0,
         headers: dict[str, str] | None = None,
         transport: httpx.AsyncBaseTransport | None = None,
     ):
@@ -160,6 +161,7 @@ class JsonHttpClient:
         self.breaker = breaker or CircuitBreaker()
         self.max_retries = max_retries
         self.backoff_base_s = backoff_base_s
+        self.rate_limit_penalty_s = rate_limit_penalty_s
         self._client = httpx.AsyncClient(
             base_url=base_url,
             timeout=timeout_s,
@@ -213,7 +215,7 @@ class JsonHttpClient:
 
             if resp.status_code == 429:
                 self._rate_limited += 1
-                wait = self._retry_after(resp) or self.backoff_base_s * (2 ** attempt) * 5
+                wait = self._retry_after(resp) or self.rate_limit_penalty_s * (2 ** attempt)
                 bucket.penalize(wait)
                 last_exc = RateLimited(self.provider, f"429 on {path}")
                 self._last_error = "429 rate limited"

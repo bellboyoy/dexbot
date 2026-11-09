@@ -1,4 +1,6 @@
-"""Creates the full schema in a real PostgreSQL and round-trips a few rows."""
+"""Round-trips rows through the schema in a real PostgreSQL.
+
+Uses metadata.create_all for speed; test_migrations.py covers the Alembic path."""
 import os
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal

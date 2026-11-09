@@ -57,18 +57,27 @@ class MarketDataService:
     def _capable(self, cap: Capability) -> list[MarketDataProvider]:
         return [p for p in self.providers if cap in p.capabilities]
 
-    async def _first(self, cap: Capability, call: Callable[[MarketDataProvider], Awaitable[T]]) -> T:
+    async def _first(self, cap: Capability, call: Callable[[MarketDataProvider], Awaitable[T]],
+                     *, none_falls_through: bool = False) -> T:
         errors: list[str] = []
+        found_none = False
         for provider in self._capable(cap):
             try:
-                return await call(provider)
+                result = await call(provider)
+                if result is None and none_falls_through:
+                    found_none = True          # e.g. a pool too new for this provider's index
+                    continue
+                return result
             except (ProviderUnavailable, InvalidResponse, CapabilityNotSupported) as exc:
                 errors.append(str(exc))
                 log.warning("provider_failover", capability=cap, provider=provider.name, error=str(exc))
+        if found_none:
+            return None  # type: ignore[return-value]  # every reachable provider said "not found"
         raise ProviderUnavailable("aggregator", f"no provider could serve {cap}: {errors or 'none capable'}")
 
     async def get_pool(self, chain: Chain, pool_address: str, *, enrich: bool = False) -> PoolSnapshot | None:
-        snap = await self._first(Capability.POOL_SNAPSHOT, lambda p: p.get_pool(chain, pool_address))
+        snap = await self._first(Capability.POOL_SNAPSHOT, lambda p: p.get_pool(chain, pool_address),
+                                 none_falls_through=True)
         if snap is None or not enrich:
             return snap
         return await self.enrich(snap)
@@ -145,6 +154,8 @@ def build_market_data_service(settings: Settings) -> MarketDataService:
     gt_client = JsonHttpClient(
         "geckoterminal", settings.geckoterminal_base_url,
         limiters={"default": RateLimiter(settings.geckoterminal_rpm, 60, burst=1)},
+        # Keyless GeckoTerminal sends no Retry-After and its limit is dynamic: back off hard.
+        rate_limit_penalty_s=30.0,
         cache=cache, timeout_s=settings.http_timeout_s, max_retries=settings.http_max_retries,
         breaker=CircuitBreaker(settings.breaker_failure_threshold, settings.breaker_cooldown_s),
     )
