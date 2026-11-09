@@ -1,0 +1,97 @@
+{
+ "data": {
+  "id": "solana_Czfq3xZZDmsdGdUyrNLtRhGc47cXcZtLG4crryfu44zE",
+  "type": "pool",
+  "attributes": {
+   "base_token_price_usd": "86.743763429589839988805137462",
+   "base_token_price_native_currency": "1.0",
+   "quote_token_price_usd": "0.99978623051346080316121182717170554531476138",
+   "quote_token_price_native_currency": "0.0115227352596471",
+   "base_token_price_quote_token": "86.784949707",
+   "quote_token_price_base_token": "0.01152273526",
+   "address": "Czfq3xZZDmsdGdUyrNLtRhGc47cXcZtLG4crryfu44zE",
+   "name": "SOL / USDC",
+   "pool_name": "SOL / USDC",
+   "pool_fee_percentage": null,
+   "pool_created_at": "2023-07-05T14:34:02Z",
+   "fdv_usd": "1143837776.20377",
+   "market_cap_usd": "1143837776.20376",
+   "price_change_percentage": {
+    "m5": "-0.026",
+    "m15": "0.288",
+    "m30": "-0.042",
+    "h1": "0.345",
+    "h6": "-0.012",
+    "h24": "-2.729"
+   },
+   "transactions": {
+    "m5": {
+     "buys": 81,
+     "sells": 147,
+     "buyers": 31,
+     "sellers": 63
+    },
+    "m15": {
+     "buys": 425,
+     "sells": 291,
+     "buyers": 124,
+     "sellers": 130
+    },
+    "m30": {
+     "buys": 835,
+     "sells": 698,
+     "buyers": 212,
+     "sellers": 213
+    },
+    "h1": {
+     "buys": 1797,
+     "sells": 1775,
+     "buyers": 338,
+     "sellers": 363
+    },
+    "h6": {
+     "buys": 11511,
+     "sells": 12426,
+     "buyers": 1575,
+     "sellers": 1817
+    },
+    "h24": {
+     "buys": 48922,
+     "sells": 55206,
+     "buyers": 4379,
+     "sellers": 5757
+    }
+   },
+   "volume_usd": {
+    "m5": "277904.428622073",
+    "m15": "830446.141439594",
+    "m30": "1912194.44915863",
+    "h1": "5468761.01341557",
+    "h6": "27743286.6040484",
+    "h24": "111801955.592648"
+   },
+   "reserve_in_usd": "24467291.0877",
+   "locked_liquidity_percentage": null
+  },
+  "relationships": {
+   "base_token": {
+    "data": {
+     "id": "solana_So11111111111111111111111111111111111111112",
+     "type": "token"
+    }
+   },
+   "quote_token": {
+    "data": {
+     "id": "solana_EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+     "type": "token"
+    }
+   },
+   "dex": {
+    "data": {
+     "id": "orca",
+     "type": "dex"
+    }
+   }
+  }
+ }
+}

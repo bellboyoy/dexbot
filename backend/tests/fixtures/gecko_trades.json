@@ -1,0 +1,88 @@
+{
+ "data": [
+  {
+   "id": "solana_467449190_3sbHVHHJWSg81AweLfAAErBudyLSeLoWxqsn1BDg2rJZHvPBF2mS7G6bd674t37ZfarJ8uPx49ChTwo6WuCRMN5e_511_1794255569",
+   "type": "trade",
+   "attributes": {
+    "block_number": 467449190,
+    "block_timestamp": "2026-11-09T20:19:25Z",
+    "tx_hash": "3sbHVHHJWSg81AweLfAAErBudyLSeLoWxqsn1BDg2rJZHvPBF2mS7G6bd674t37ZfarJ8uPx49ChTwo6WuCRMN5e",
+    "tx_from_address": "DKsKrFHW39c7KotTPzBWZ7t2CrvPNWG2JoVW8XvAoBbQ",
+    "kind": "buy",
+    "from_token_address": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+    "to_token_address": "So11111111111111111111111111111111111111112",
+    "from_token_amount": "467.601467",
+    "to_token_amount": "5.385332111",
+    "price_from_in_usd": "0.99902161903687469956071260944605759469009248",
+    "price_to_in_usd": "86.743763429589839988805137462",
+    "price_from_in_currency_token": "0.011516927321787",
+    "price_to_in_currency_token": "1.0",
+    "volume_in_usd": "467.14397462635773660977347174237458864357865401366816",
+    "is_anomalous": false
+   }
+  },
+  {
+   "id": "solana_467449177_34TKCRewAtYwCvBQiyzjNx1bRvDBPasCW2mq4HEhkeSWMVwzBDgESzPhQmR3vyQWdmS976yM7af4YsXdtEj2SpR5_40_1794255564",
+   "type": "trade",
+   "attributes": {
+    "block_number": 467449177,
+    "block_timestamp": "2026-11-09T20:19:22Z",
+    "tx_hash": "34TKCRewAtYwCvBQiyzjNx1bRvDBPasCW2mq4HEhkeSWMVwzBDgESzPhQmR3vyQWdmS976yM7af4YsXdtEj2SpR5",
+    "tx_from_address": "GG5ATPW7bxGm5y4aGa2uWWZV1JvjETiM2Rabc2fT8Y7f",
+    "kind": "sell",
+    "from_token_address": "So11111111111111111111111111111111111111112",
+    "to_token_address": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+    "from_token_amount": "1.16",
+    "to_token_amount": "100.640487",
+    "price_from_in_usd": "86.743763429589839988805137462",
+    "price_to_in_usd": "0.99982391359378300088333571258628493671157628",
+    "price_from_in_currency_token": "1.0",
+    "price_to_in_currency_token": "0.0115261763389519",
+    "volume_in_usd": "100.62276557832421438701395945592",
+    "is_anomalous": false
+   }
+  },
+  {
+   "id": "solana_467449175_2GFPPNjZCv5xX2yK6d7jwkYgoKn7itkM4qVicjw41wDX9TPY7MWHbXZ6WBz8c56WAS3XUWtFphu9auBjsR3y8KWU_94_1794255564",
+   "type": "trade",
+   "attributes": {
+    "block_number": 467449175,
+    "block_timestamp": "2026-11-09T20:19:22Z",
+    "tx_hash": "2GFPPNjZCv5xX2yK6d7jwkYgoKn7itkM4qVicjw41wDX9TPY7MWHbXZ6WBz8c56WAS3XUWtFphu9auBjsR3y8KWU",
+    "tx_from_address": "D9gQ6RhKEpnobPBUdWY5bPQt2p3zGk3iVz6ChpUi2ArA",
+    "kind": "sell",
+    "from_token_address": "So11111111111111111111111111111111111111112",
+    "to_token_address": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+    "from_token_amount": "17.04",
+    "to_token_amount": "1478.390534",
+    "price_from_in_usd": "86.743763429589839988805137462",
+    "price_to_in_usd": "0.99981276587381835810988402895726699947976604",
+    "price_from_in_currency_token": "1.0",
+    "price_to_in_currency_token": "0.0115260478257364",
+    "volume_in_usd": "1478.11372884021087340923954235248",
+    "is_anomalous": false
+   }
+  },
+  {
+   "id": "solana_467449163_4xCTZxc2sgfsjfoJ3broa6VFWEz49ymG8ese5kvRy23T5e9a5UGEUXcUhh7NV6Hf1U3VyJ1iU1oe7D9o4Q7V57DN_94_1794255563",
+   "type": "trade",
+   "attributes": {
+    "block_number": 467449163,
+    "block_timestamp": "2026-11-09T20:19:19Z",
+    "tx_hash": "4xCTZxc2sgfsjfoJ3broa6VFWEz49ymG8ese5kvRy23T5e9a5UGEUXcUhh7NV6Hf1U3VyJ1iU1oe7D9o4Q7V57DN",
+    "tx_from_address": "D9gQ6RhKEpnobPBUdWY5bPQt2p3zGk3iVz6ChpUi2ArA",
+    "kind": "sell",
+    "from_token_address": "So11111111111111111111111111111111111111112",
+    "to_token_address": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+    "from_token_amount": "8.04",
+    "to_token_amount": "697.561172",
+    "price_from_in_usd": "86.743763429589839988805137462",
+    "price_to_in_usd": "0.99979741701262911307038336645040801687424454",
+    "price_from_in_currency_token": "1.0",
+    "price_to_in_currency_token": "0.0115258708808982",
+    "volume_in_usd": "697.419857973902226766229875604640011194862538",
+    "is_anomalous": false
+   }
+  }
+ ]
+}

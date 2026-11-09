@@ -1,0 +1,31 @@
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: dexbot
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-dexbot}
+      POSTGRES_DB: dexbot
+    volumes: [pgdata:/var/lib/postgresql/data]
+    ports: ["127.0.0.1:5432:5432"]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U dexbot"]
+      interval: 5s
+      retries: 10
+
+  redis:
+    image: redis:7
+    ports: ["127.0.0.1:6379:6379"]
+
+  backend:
+    build: ./backend
+    env_file: .env
+    environment:
+      DEXBOT_DATABASE_URL: postgresql+asyncpg://dexbot:${POSTGRES_PASSWORD:-dexbot}@postgres:5432/dexbot
+      DEXBOT_REDIS_URL: redis://redis:6379/0
+    depends_on:
+      postgres: {condition: service_healthy}
+      redis: {condition: service_started}
+    ports: ["127.0.0.1:8000:8000"]
+
+volumes:
+  pgdata:
