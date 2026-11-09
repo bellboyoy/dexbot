@@ -9,6 +9,8 @@ import structlog
 
 def configure_logging(level: str = "INFO", json: bool = True) -> None:
     logging.basicConfig(format="%(message)s", stream=sys.stdout, level=level.upper())
+    # httpx logs every request at INFO; our clients log failures and rate limits themselves.
+    logging.getLogger("httpx").setLevel(logging.WARNING)
     processors: list = [
         structlog.contextvars.merge_contextvars,
         structlog.processors.add_log_level,

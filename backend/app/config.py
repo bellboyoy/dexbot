@@ -33,8 +33,10 @@ class Settings(BaseSettings):
     dexscreener_pairs_rpm: int = 200
     dexscreener_profiles_rpm: int = 55
     geckoterminal_base_url: str = "https://api.geckoterminal.com/api/v2"
-    geckoterminal_rpm: int = 5
+    geckoterminal_rpm: int = 3
     coingecko_api_key: SecretStr | None = None
+
+    collector_max_watchlist: int = 300
 
     http_timeout_s: float = 10.0
     http_max_retries: int = 3

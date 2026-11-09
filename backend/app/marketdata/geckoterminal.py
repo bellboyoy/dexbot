@@ -16,6 +16,7 @@ from typing import Any
 
 from app.domain.chains import (
     GECKOTERMINAL_NETWORK_IDS, Chain, InvalidAddress, chain_from_provider_id, normalize_address,
+    normalize_pool_id,
 )
 from app.domain.market import (
     WINDOWS, Candle, DataSource, DiscoveredToken, PoolSnapshot, PoolTrade, Timeframe, TokenRef,
@@ -36,6 +37,7 @@ OHLCV_PARAMS: dict[Timeframe, tuple[str, int]] = {
     Timeframe.D1: ("day", 1),
 }
 OHLCV_MAX_LIMIT = 1000
+MULTI_BATCH = 30
 
 
 class GeckoTerminalProvider:
@@ -65,7 +67,7 @@ class GeckoTerminalProvider:
         return rid[len(prefix):] if rid.startswith(prefix) else None
 
     # --- parsing -------------------------------------------------------------
-    def parse_pool(self, item: dict[str, Any], chain: Chain) -> PoolSnapshot | None:
+    def parse_pool(self, item: dict[str, Any], chain: Chain, observed_at: datetime | None = None) -> PoolSnapshot | None:
         if not isinstance(item, dict) or item.get("type") != "pool":
             raise InvalidResponse(self.name, "expected a pool resource")
         network = self._network(chain)
@@ -74,7 +76,7 @@ class GeckoTerminalProvider:
         name = a.get("name") or ""
         base_sym, _, quote_sym = name.partition(" / ")
         try:
-            pool_addr = normalize_address(chain, a.get("address", ""))
+            pool_addr = normalize_pool_id(chain, a.get("address", ""))
             base_addr = self._rel_address(network, rel.get("base_token"))
             if base_addr is None:
                 raise InvalidAddress("missing base token")
@@ -82,7 +84,7 @@ class GeckoTerminalProvider:
             quote_addr = self._rel_address(network, rel.get("quote_token"))
             quote_ref = TokenRef(chain, normalize_address(chain, quote_addr), quote_sym or None) if quote_addr else None
         except InvalidAddress as exc:
-            log.warning("geckoterminal_pool_rejected", reason=str(exc), pool=a.get("address"))
+            log.info("geckoterminal_pool_rejected", reason=str(exc), pool=a.get("address"))
             return None
 
         txs = a.get("transactions") or {}
@@ -101,7 +103,7 @@ class GeckoTerminalProvider:
         dex = ((rel.get("dex") or {}).get("data") or {}).get("id")
         return PoolSnapshot(
             source=DataSource.GECKOTERMINAL, chain=chain, pool_address=pool_addr, dex_id=dex,
-            base_token=base_ref, quote_token=quote_ref, observed_at=utcnow(),
+            base_token=base_ref, quote_token=quote_ref, observed_at=observed_at or utcnow(),
             price_usd=dec(a.get("base_token_price_usd")), price_native=dec(a.get("base_token_price_quote_token")),
             liquidity_usd=dec(a.get("reserve_in_usd")), fdv_usd=dec(a.get("fdv_usd")),
             market_cap_usd=dec(a.get("market_cap_usd")), pool_created_at=iso(a.get("pool_created_at")),
@@ -109,11 +111,11 @@ class GeckoTerminalProvider:
             pool_fee_pct=dec(a.get("pool_fee_percentage")), raw=item,
         )
 
-    def _parse_pool_list(self, data: Any, chain: Chain) -> list[PoolSnapshot]:
+    def _parse_pool_list(self, data: Any, chain: Chain, observed_at: datetime | None = None) -> list[PoolSnapshot]:
         items = (data or {}).get("data")
         if not isinstance(items, list):
             raise InvalidResponse(self.name, "expected data[] of pools")
-        return [s for s in (self.parse_pool(i, chain) for i in items) if s is not None]
+        return [s for s in (self.parse_pool(i, chain, observed_at) for i in items) if s is not None]
 
     @staticmethod
     def parse_ohlcv(data: Any, timeframe: Timeframe, now: datetime | None = None) -> list[Candle]:
@@ -137,23 +139,46 @@ class GeckoTerminalProvider:
 
     # --- queries -------------------------------------------------------------
     async def get_pool(self, chain: Chain, pool_address: str) -> PoolSnapshot | None:
-        addr = normalize_address(chain, pool_address)
-        data = await self.client.get_json(f"/networks/{self._network(chain)}/pools/{addr}",
-                                          cache_ttl_s=30, allow_404=True)
-        if not data:
+        addr = normalize_pool_id(chain, pool_address)
+        res = await self.client.get_json_meta(f"/networks/{self._network(chain)}/pools/{addr}",
+                                              cache_ttl_s=30, allow_404=True)
+        if not res.data:
             return None
-        item = data.get("data")
-        return self.parse_pool(item, chain) if item else None
+        item = res.data.get("data")
+        return self.parse_pool(item, chain, res.fetched_at) if item else None
 
     async def get_new_pools(self, chain: Chain) -> list[PoolSnapshot]:
-        data = await self.client.get_json(f"/networks/{self._network(chain)}/new_pools", {"page": 1},
-                                          cache_ttl_s=60)
-        return self._parse_pool_list(data, chain)
+        res = await self.client.get_json_meta(f"/networks/{self._network(chain)}/new_pools", {"page": 1},
+                                              cache_ttl_s=60)
+        return self._parse_pool_list(res.data, chain, res.fetched_at)
 
     async def get_trending_pools(self, chain: Chain) -> list[PoolSnapshot]:
-        data = await self.client.get_json(f"/networks/{self._network(chain)}/trending_pools", {"page": 1},
-                                          cache_ttl_s=120)
-        return self._parse_pool_list(data, chain)
+        res = await self.client.get_json_meta(f"/networks/{self._network(chain)}/trending_pools", {"page": 1},
+                                              cache_ttl_s=120)
+        return self._parse_pool_list(res.data, chain, res.fetched_at)
+
+    async def get_pools_multi(self, chain: Chain, pool_addresses: list[str]) -> dict[str, PoolSnapshot]:
+        """Up to 30 pools per call via /networks/{network}/pools/multi/{addresses}
+        (verified keyless on 2026-11-09). Source of unique buyer/seller counts."""
+        addrs = list(dict.fromkeys(normalize_pool_id(chain, a) for a in pool_addresses))
+        out: dict[str, PoolSnapshot] = {}
+        for i in range(0, len(addrs), MULTI_BATCH):
+            chunk = addrs[i:i + MULTI_BATCH]
+            res = await self.client.get_json_meta(
+                f"/networks/{self._network(chain)}/pools/multi/{','.join(chunk)}", cache_ttl_s=30, allow_404=True)
+            if not res.data:
+                continue
+            for snap in self._parse_pool_list(res.data, chain, res.fetched_at):
+                if snap.pool_address in chunk:
+                    out[snap.pool_address] = snap
+        return out
+
+    async def get_top_pools(self, chain: Chain) -> list[PoolSnapshot]:
+        """Top pools of a network by 24h volume: /networks/{network}/pools?sort=h24_volume_usd_desc.
+        Used to seed the established-token universe."""
+        res = await self.client.get_json_meta(f"/networks/{self._network(chain)}/pools",
+                                              {"page": 1, "sort": "h24_volume_usd_desc"}, cache_ttl_s=600)
+        return self._parse_pool_list(res.data, chain, res.fetched_at)
 
     async def discover(self, chains: list[Chain]) -> list[DiscoveredToken]:
         leads: list[DiscoveredToken] = []
@@ -167,7 +192,7 @@ class GeckoTerminalProvider:
 
     async def get_ohlcv(self, chain: Chain, pool_address: str, timeframe: Timeframe,
                         limit: int = 100, before_ts: int | None = None) -> list[Candle]:
-        addr = normalize_address(chain, pool_address)
+        addr = normalize_pool_id(chain, pool_address)
         unit, agg = OHLCV_PARAMS[timeframe]
         params: dict[str, Any] = {"aggregate": agg, "limit": max(1, min(limit, OHLCV_MAX_LIMIT)),
                                   "currency": "usd", "token": "base"}
@@ -178,7 +203,7 @@ class GeckoTerminalProvider:
         return self.parse_ohlcv(data, timeframe) if data else []
 
     async def get_trades(self, chain: Chain, pool_address: str) -> list[PoolTrade]:
-        addr = normalize_address(chain, pool_address)
+        addr = normalize_pool_id(chain, pool_address)
         data = await self.client.get_json(f"/networks/{self._network(chain)}/pools/{addr}/trades",
                                           cache_ttl_s=30, allow_404=True)
         items = (data or {}).get("data") or []

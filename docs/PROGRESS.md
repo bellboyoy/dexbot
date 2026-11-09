@@ -48,5 +48,58 @@ Verification caveats:
 - During a DexScreener outage, GeckoTerminal alone cannot carry scanning load at ~5 calls/min. Requests fail closed (reported unavailable) rather than returning stale or partial data. A CoinGecko API key is the fix before paper trading at scale.
 - API JSON renders Decimals as floats (display only; storage and internal math use Decimal).
 
-## Next: Phase 2
-Snapshot collector persisting to Postgres, screening profiles for new vs established tokens, Redis cache, Alembic, RPC-based monitoring of watched pools.
+## Phase 2 — discovery and market data collection (2026-11-09)
+
+Completed:
+- **Collector process** (`python -m app.collector`, compose service `collector`) with isolated loops for discovery, snapshots, buyers and OHLCV, scanning Solana, Base and BSC independently. Arbitrum is wired in but not enabled.
+- **Three discovery pipelines** (`new`, `established`, `momentum`), each with its own sources, schedule, screening profile and stats. Sources are pluggable adapters (`DiscoverySource`): DexScreener profiles/boosts, GeckoTerminal new/trending/top pools, and quote-asset seeds.
+- **Deduplication** across providers per `(chain, token)` and per pool, enforced in code and by unique constraints (`ON CONFLICT`). Every lead is stored with its outcome, including rejected and unresolved ones, to avoid survivorship bias.
+- **Historical snapshots** every 30s for active pools (DexScreener, 30 pools per request), with `source` and real fetch time `observed_at` on every row.
+- **OHLCV**: 1m and 15m backfill (1000 candles each), then 1m refreshes. 5m, 1h and 4h are resampled from stored 1m candles; only fully covered buckets are emitted. Only closed candles are stored.
+- **Metrics** (`pool_metrics`): volume acceleration (age-gated), buy/sell ratios, unique buyers/sellers (GeckoTerminal, used only if under 10 min old), liquidity change over 5m and 1h from our own history. Missing inputs are `NULL`, never 0.
+- **Momentum detection** among watched pools, from reliable metrics only, with a 15-minute cooldown.
+- **Data-quality system**: stale, frozen, missing fields, invalid values, liquidity jumps, cross-source price/liquidity divergence, provider outages, candle gaps/lag. Blocking flags mark an observation unreliable; it is kept for audit but never feeds metrics or momentum. Cached responses keep their original fetch time, so stale data cannot be passed off as fresh.
+- **Restart recovery**: watchlist schedules, discovery schedules, liquidity history and momentum cooldowns are restored from Postgres. Clean shutdown on SIGINT/SIGTERM.
+- **Pool lifecycle** active → inactive → dead → retired, with outages never counted as a pool going missing.
+- **API**: `/collector/status`, `/quality?hours=`, `/history/{chain}/pools/{pool}/candles?timeframe=`.
+- **Migrations**: 3 new (discovery/watchlist, wider pool ids for Uniswap v4-style 32-byte ids, market intelligence).
+
+Tests (all passing on 2026-11-09):
+- Unit (offline): 114 passed. They cover parsing, screening, metrics, quality checks, resampling, scheduling, lifecycle and API, including failure cases (outages, 429s, missing fields, stale and cached data, invalid addresses).
+- PostgreSQL: 19 passed. They cover migrations up/down/up with no drift, discovery to watchlist to snapshots and candles with fake providers, deduplication, outage handling, restart recovery, lifecycle, OHLCV idempotency, chain fairness and API endpoints.
+- Live: 3 passed (provider APIs, quote assets on all chains, end-to-end collection).
+
+Live run (30 minutes, all three chains, restarted from the previous run's state):
+- All three pipelines ran on every chain. Lead sources: GeckoTerminal new, trending and top pools, DexScreener profiles and boosts, and quote-asset seeds. Every outcome was recorded, including rejections (for example `too_young`, `unknown_liquidity`, `quote_not_exitable`, `no_sells`).
+- Watchlist: Solana 35 pools, Base 22, BSC 30 (some moved to inactive or dead during the run). Snapshots this run: Solana 1,969, Base 1,025, BSC 1,352.
+- Metrics: every row reliable. 63% of rows had a fresh unique-buyers count.
+- Six momentum events (Solana 4, Base 1, BSC 1).
+- Quality: no stale or frozen data. Cross-source divergence and liquidity-jump flags were raised and recorded.
+- 15 GeckoTerminal 429s were absorbed by the limiter, with no lost loops. Restart restore and SIGINT shutdown were clean.
+- **Issue found and fixed:** all candle backfills had gone to Solana, and Base and BSC had none, because the queue was ordered globally by due time. It now rotates across chains and puts active pools before dead ones (new test). A 9-minute re-run backfilled one pool on each chain, and Base and BSC now have candles.
+
+Fixed during live runs:
+1. Uniswap v4-style 32-byte pool ids (Base, BSC) were rejected as invalid, silently dropping those pools. They are now accepted and the column was widened.
+2. GeckoTerminal 429 storms starved OHLCV collection. Budget lowered to 3 calls/min, penalty capped at 120s, retries capped at 2, discovery spread out, at most one rate-limited fetch per pipeline per cycle, priority gate (discovery > buyers > backfill).
+3. Cached responses were re-stamped with the current time, which could pass stale data off as fresh. The cache now keeps the original fetch time and the stale check uses it.
+4. JSON `null` was stored instead of SQL `NULL` in `quality_flags`, which broke the restart query that rebuilds liquidity history.
+5. Volume acceleration was trivially high for pools younger than the comparison window, producing false momentum events. It is now only computed once the pool is old enough; the false events from that run were deleted.
+6. Shutdown could hang behind a rate-limit penalty. Loops are now cancelled after a 10s grace period.
+
+API limitations:
+- **Keyless GeckoTerminal (~3 usable calls/min, shared per IP)** is the binding constraint. It limits how many pools get candles and buyer counts: the first backfill of N pools takes about N×2/3 minutes, and buyer counts for 300 pools need 10 requests, one every 90 seconds, so each pool is refreshed about every 15 minutes. With a full watchlist many buyer counts will therefore be older than the 10-minute freshness limit and reported as unknown. A CoinGecko API key (pro endpoint) would lift this; it is not wired yet.
+- **DexScreener has no OHLCV, unique buyers or history.** Our 30s snapshots are the history; candles come only from GeckoTerminal.
+- **Unique buyers** come only from GeckoTerminal and are treated as unknown when older than 10 minutes.
+- DexScreener's limits for pair/token endpoints are not documented; batches of 30 were verified live and the client stays conservative.
+- GeckoTerminal top pools (`/networks/{n}/pools?sort=h24_volume_usd_desc`) was verified live on all three chains in the final run.
+
+Outstanding issues:
+- **Candle coverage is budget-bound.** Discovery and buyer counts take most of the ~3 GeckoTerminal calls a minute, so backfill managed only about one pool every 3 minutes. 75 watched pools were still waiting for candles at the end of the run, while snapshots and metrics covered every pool. A CoinGecko key, or a smaller watchlist, is needed for full candle coverage.
+- No Redis-backed cache or rate limiter yet; a single collector process owns the budgets. Running two collectors would double the GeckoTerminal load.
+- No on-chain RPC monitoring yet (planned before paper trading, to reduce dependence on the two aggregators).
+- Momentum thresholds and screening profiles are first estimates and need calibration against collected history (Phase 3 backtesting).
+- EIP-55 checksum validation of EVM addresses is still pending (Phase 4).
+- The same sandbox caveat as Phase 1 applies: please run `docker compose up -d --build` once on your machine.
+
+## Next: Phase 3
+Not started. Waiting for Phase 2 acceptance.

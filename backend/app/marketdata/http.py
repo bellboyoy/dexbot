@@ -12,6 +12,7 @@ import random
 import time
 from collections import OrderedDict
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import Any, Callable, Protocol
 
 import httpx
@@ -124,6 +125,15 @@ class CircuitBreaker:
             self._opened_at = self._clock()
 
 
+@dataclass(frozen=True)
+class FetchResult:
+    """A response plus when it was actually fetched from the provider. A cached response
+    keeps its original fetch time, so cached data is never presented as fresh."""
+    data: Any
+    fetched_at: datetime
+    from_cache: bool
+
+
 @dataclass
 class ProviderStatus:
     name: str
@@ -150,6 +160,7 @@ class JsonHttpClient:
         max_retries: int = 3,
         backoff_base_s: float = 1.0,
         rate_limit_penalty_s: float = 5.0,
+        max_rate_limit_penalty_s: float = 120.0,
         headers: dict[str, str] | None = None,
         transport: httpx.AsyncBaseTransport | None = None,
     ):
@@ -162,6 +173,7 @@ class JsonHttpClient:
         self.max_retries = max_retries
         self.backoff_base_s = backoff_base_s
         self.rate_limit_penalty_s = rate_limit_penalty_s
+        self.max_rate_limit_penalty_s = max_rate_limit_penalty_s
         self._client = httpx.AsyncClient(
             base_url=base_url,
             timeout=timeout_s,
@@ -181,7 +193,12 @@ class JsonHttpClient:
         return ProviderStatus(self.provider, self.breaker.state, self._last_error, self._last_success,
                               self._requests, self._cache_hits, self._rate_limited)
 
-    async def get_json(
+    async def get_json(self, path: str, params: dict[str, Any] | None = None, *, cache_ttl_s: float = 0.0,
+                       limiter: str = "default", allow_404: bool = False) -> Any | None:
+        res = await self.get_json_meta(path, params, cache_ttl_s=cache_ttl_s, limiter=limiter, allow_404=allow_404)
+        return res.data
+
+    async def get_json_meta(
         self,
         path: str,
         params: dict[str, Any] | None = None,
@@ -189,13 +206,14 @@ class JsonHttpClient:
         cache_ttl_s: float = 0.0,
         limiter: str = "default",
         allow_404: bool = False,
-    ) -> Any | None:
+    ) -> FetchResult:
         key = f"{self.provider}:{path}?{sorted((params or {}).items())}"
         if cache_ttl_s > 0:
             cached = await self.cache.get(key)
             if cached is not None:
                 self._cache_hits += 1
-                return cached
+                fetched_at, data = cached
+                return FetchResult(data, fetched_at, True)
 
         if not self.breaker.allow():
             raise ProviderUnavailable(self.provider, "circuit breaker open")
@@ -215,7 +233,8 @@ class JsonHttpClient:
 
             if resp.status_code == 429:
                 self._rate_limited += 1
-                wait = self._retry_after(resp) or self.rate_limit_penalty_s * (2 ** attempt)
+                wait = min(self._retry_after(resp) or self.rate_limit_penalty_s * (2 ** attempt),
+                           self.max_rate_limit_penalty_s)
                 bucket.penalize(wait)
                 last_exc = RateLimited(self.provider, f"429 on {path}")
                 self._last_error = "429 rate limited"
@@ -223,7 +242,7 @@ class JsonHttpClient:
                 continue
             if resp.status_code == 404 and allow_404:
                 self.breaker.record_success()
-                return None
+                return FetchResult(None, datetime.now(timezone.utc), False)
             if resp.status_code >= 500:
                 last_exc = ProviderUnavailable(self.provider, f"HTTP {resp.status_code} on {path}")
                 self._last_error = f"HTTP {resp.status_code}"
@@ -239,12 +258,13 @@ class JsonHttpClient:
             except ValueError as exc:
                 self.breaker.record_failure()
                 raise InvalidResponse(self.provider, f"non-JSON body on {path}") from exc
+            fetched_at = datetime.now(timezone.utc)
             self.breaker.record_success()
             self._last_success = time.time()
             self._last_error = None
             if cache_ttl_s > 0:
-                await self.cache.set(key, data, cache_ttl_s)
-            return data
+                await self.cache.set(key, (fetched_at, data), cache_ttl_s)
+            return FetchResult(data, fetched_at, False)
 
         self.breaker.record_failure()
         log.error("provider_request_failed", provider=self.provider, path=path, error=str(last_exc))

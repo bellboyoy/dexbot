@@ -11,10 +11,12 @@ DexScreener offers no OHLCV, trade list, unique-trader counts or history.
 """
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Any
 
 from app.domain.chains import (
     DEXSCREENER_CHAIN_IDS, Chain, InvalidAddress, chain_from_provider_id, normalize_address,
+    normalize_pool_id,
 )
 from app.domain.market import (
     Candle, DataSource, DiscoveredToken, PoolSnapshot, PoolTrade, Timeframe, TokenRef, WindowStats,
@@ -27,8 +29,10 @@ from app.marketdata.parsing import dec, int_or_none, ts_ms, utcnow
 
 log = get_logger(__name__)
 
-# Max addresses per /tokens/v1 call. Commonly cited as 30; not stated in rendered docs.
+# Max addresses per /tokens/v1 and multi-pair /latest/dex/pairs call. Commonly cited as 30;
+# not stated in rendered docs. Comma-separated pair ids verified live on 2026-11-09.
 TOKENS_BATCH = 30
+PAIRS_BATCH = 30
 
 
 class DexScreenerProvider:
@@ -48,7 +52,7 @@ class DexScreenerProvider:
         return self.client.status()
 
     # --- parsing -------------------------------------------------------------
-    def parse_pair(self, p: dict[str, Any]) -> PoolSnapshot | None:
+    def parse_pair(self, p: dict[str, Any], observed_at: datetime | None = None) -> PoolSnapshot | None:
         """Parse one DexScreener pair object. Returns None for unsupported chains or bad addresses."""
         if not isinstance(p, dict):
             raise InvalidResponse(self.name, "pair is not an object")
@@ -56,14 +60,14 @@ class DexScreenerProvider:
         if chain is None or chain not in self.enabled_chains:
             return None
         try:
-            pool_addr = normalize_address(chain, p["pairAddress"])
+            pool_addr = normalize_pool_id(chain, p["pairAddress"])
             base = p["baseToken"]
             base_ref = TokenRef(chain, normalize_address(chain, base["address"]), base.get("symbol"), base.get("name"))
             q = p.get("quoteToken") or {}
             quote_ref = (TokenRef(chain, normalize_address(chain, q["address"]), q.get("symbol"), q.get("name"))
                          if q.get("address") else None)
         except (KeyError, TypeError, InvalidAddress) as exc:
-            log.warning("dexscreener_pair_rejected", reason=str(exc), pair=p.get("pairAddress"))
+            log.info("dexscreener_pair_rejected", reason=str(exc), pair=p.get("pairAddress"))
             return None
 
         txns = p.get("txns") or {}
@@ -79,34 +83,50 @@ class DexScreenerProvider:
         liq = p.get("liquidity") or {}
         return PoolSnapshot(
             source=DataSource.DEXSCREENER, chain=chain, pool_address=pool_addr, dex_id=p.get("dexId"),
-            base_token=base_ref, quote_token=quote_ref, observed_at=utcnow(),
+            base_token=base_ref, quote_token=quote_ref, observed_at=observed_at or utcnow(),
             price_usd=dec(p.get("priceUsd")), price_native=dec(p.get("priceNative")),
             liquidity_usd=dec(liq.get("usd")), fdv_usd=dec(p.get("fdv")), market_cap_usd=dec(p.get("marketCap")),
             pool_created_at=ts_ms(p.get("pairCreatedAt")), windows=windows, raw=p,
         )
 
-    def _parse_pairs(self, items: Any) -> list[PoolSnapshot]:
+    def _parse_pairs(self, items: Any, observed_at: datetime | None = None) -> list[PoolSnapshot]:
         if items is None:
             return []
         if not isinstance(items, list):
             raise InvalidResponse(self.name, "expected a list of pairs")
-        return [s for s in (self.parse_pair(i) for i in items) if s is not None]
+        return [s for s in (self.parse_pair(i, observed_at) for i in items) if s is not None]
 
     # --- queries -------------------------------------------------------------
     async def get_pool(self, chain: Chain, pool_address: str) -> PoolSnapshot | None:
-        addr = normalize_address(chain, pool_address)
-        data = await self.client.get_json(
+        addr = normalize_pool_id(chain, pool_address)
+        res = await self.client.get_json_meta(
             f"/latest/dex/pairs/{DEXSCREENER_CHAIN_IDS[chain]}/{addr}", cache_ttl_s=10, allow_404=True)
-        if not data:
+        if not res.data:
             return None
-        pools = self._parse_pairs(data.get("pairs"))
+        pools = self._parse_pairs(res.data.get("pairs"), res.fetched_at)
         return next((s for s in pools if s.pool_address == addr), None)
+
+    async def get_pools(self, chain: Chain, pool_addresses: list[str]) -> dict[str, PoolSnapshot]:
+        """Snapshots for many pools in batched calls, keyed by pool address. Pools the
+        API does not return are simply absent (the caller decides what a miss means)."""
+        addrs = list(dict.fromkeys(normalize_pool_id(chain, a) for a in pool_addresses))
+        out: dict[str, PoolSnapshot] = {}
+        for i in range(0, len(addrs), PAIRS_BATCH):
+            chunk = addrs[i:i + PAIRS_BATCH]
+            res = await self.client.get_json_meta(
+                f"/latest/dex/pairs/{DEXSCREENER_CHAIN_IDS[chain]}/{','.join(chunk)}", cache_ttl_s=10,
+                allow_404=True)
+            wanted = set(chunk)
+            for snap in self._parse_pairs((res.data or {}).get("pairs"), res.fetched_at):
+                if snap.pool_address in wanted:
+                    out[snap.pool_address] = snap
+        return out
 
     async def get_token_pools(self, chain: Chain, token_address: str) -> list[PoolSnapshot]:
         addr = normalize_address(chain, token_address)
-        data = await self.client.get_json(
+        res = await self.client.get_json_meta(
             f"/token-pairs/v1/{DEXSCREENER_CHAIN_IDS[chain]}/{addr}", cache_ttl_s=15, allow_404=True)
-        return self._parse_pairs(data)
+        return self._parse_pairs(res.data, res.fetched_at)
 
     async def get_tokens(self, chain: Chain, token_addresses: list[str]) -> list[PoolSnapshot]:
         """Pools for many tokens in batched calls."""
@@ -114,23 +134,26 @@ class DexScreenerProvider:
         out: list[PoolSnapshot] = []
         for i in range(0, len(addrs), TOKENS_BATCH):
             chunk = ",".join(addrs[i:i + TOKENS_BATCH])
-            data = await self.client.get_json(
+            res = await self.client.get_json_meta(
                 f"/tokens/v1/{DEXSCREENER_CHAIN_IDS[chain]}/{chunk}", cache_ttl_s=10, allow_404=True)
-            out.extend(self._parse_pairs(data))
+            out.extend(self._parse_pairs(res.data, res.fetched_at))
         return out
 
     async def search(self, query: str) -> list[PoolSnapshot]:
-        data = await self.client.get_json("/latest/dex/search", {"q": query}, cache_ttl_s=30)
-        return self._parse_pairs((data or {}).get("pairs"))
+        res = await self.client.get_json_meta("/latest/dex/search", {"q": query}, cache_ttl_s=30)
+        return self._parse_pairs((res.data or {}).get("pairs"), res.fetched_at)
 
-    async def discover(self, chains: list[Chain]) -> list[DiscoveredToken]:
+    async def discover(self, chains: list[Chain],
+                       kinds: tuple[str, ...] = ("profiles", "boosts")) -> list[DiscoveredToken]:
         """Leads from latest token profiles and boosts. Boosts are paid promotion and are
         labelled as such so screening can treat them sceptically."""
         wanted = {DEXSCREENER_CHAIN_IDS[c]: c for c in chains if c in self.enabled_chains}
         leads: list[DiscoveredToken] = []
-        for path, reason in (("/token-profiles/latest/v1", "dexscreener_profile"),
-                             ("/token-boosts/latest/v1", "dexscreener_boost_paid")):
-            data = await self.client.get_json(path, cache_ttl_s=30, limiter="profiles")
+        endpoints = {"profiles": ("/token-profiles/latest/v1", "dexscreener_profile"),
+                     "boosts": ("/token-boosts/latest/v1", "dexscreener_boost_paid")}
+        for path, reason in (endpoints[k] for k in kinds):
+            res = await self.client.get_json_meta(path, cache_ttl_s=30, limiter="profiles")
+            data = res.data
             if not isinstance(data, list):
                 raise InvalidResponse(self.name, f"{path} did not return a list")
             for item in data:
@@ -141,7 +164,7 @@ class DexScreenerProvider:
                     addr = normalize_address(chain, item.get("tokenAddress", ""))
                 except InvalidAddress:
                     continue
-                leads.append(DiscoveredToken(DataSource.DEXSCREENER, chain, addr, None, utcnow(), reason))
+                leads.append(DiscoveredToken(DataSource.DEXSCREENER, chain, addr, None, res.fetched_at, reason))
         return leads
 
     async def get_new_pools(self, chain: Chain) -> list[PoolSnapshot]:

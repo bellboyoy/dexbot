@@ -108,3 +108,24 @@ async def test_trending_base_evm_addresses_lowercased(load_fixture):
         return_value=httpx.Response(200, json=load_fixture("gecko_trending_pools.json")))
     pools = await provider().get_trending_pools(Chain.BASE)
     assert pools and all(p.pool_address == p.pool_address.lower() for p in pools)
+
+
+@respx.mock
+async def test_pools_multi_batches_and_keeps_fetch_time(load_fixture):
+    from tests.factories import sol_addr
+    data = load_fixture("gecko_new_pools.json")
+    first = data["data"][0]["attributes"]["address"]
+    route = respx.get(url__regex=rf"{BASE}/networks/solana/pools/multi/.*").mock(
+        return_value=httpx.Response(200, json=data))
+    got = await provider().get_pools_multi(Chain.SOLANA, [first] + [sol_addr(500 + i) for i in range(35)])
+    assert route.call_count == 2 and first in got
+    snap = got[first]
+    assert snap.window("h1").buyers is not None and snap.observed_at.tzinfo is not None
+
+
+@respx.mock
+async def test_top_pools_sorted_by_volume(load_fixture):
+    route = respx.get(f"{BASE}/networks/bsc/pools").mock(
+        return_value=httpx.Response(200, json={"data": []}))
+    assert await provider().get_top_pools(Chain.BSC) == []
+    assert route.calls[0].request.url.params["sort"] == "h24_volume_usd_desc"

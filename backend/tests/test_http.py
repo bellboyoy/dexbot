@@ -133,3 +133,24 @@ async def test_non_json_body():
 def test_client_requires_default_limiter():
     with pytest.raises(ValueError):
         JsonHttpClient("t", BASE, limiters={"other": RateLimiter(1)})
+
+
+@respx.mock
+async def test_429_penalty_is_capped():
+    respx.get(f"{BASE}/x").mock(return_value=httpx.Response(429))
+    c = make_client(max_retries=3, rate_limit_penalty_s=10, max_rate_limit_penalty_s=0.01)
+    with pytest.raises(RateLimited):
+        await asyncio.wait_for(c.get_json("/x"), 2)          # 10s, 20s, 40s penalties capped to 10ms
+    await c.aclose()
+
+
+@respx.mock
+async def test_cached_response_keeps_original_fetch_time():
+    respx.get(f"{BASE}/x").mock(return_value=httpx.Response(200, json={"ok": 1}))
+    c = make_client()
+    first = await c.get_json_meta("/x", cache_ttl_s=60)
+    await asyncio.sleep(0.02)
+    second = await c.get_json_meta("/x", cache_ttl_s=60)
+    assert not first.from_cache and second.from_cache
+    assert second.fetched_at == first.fetched_at          # cached data is never re-stamped as fresh
+    await c.aclose()

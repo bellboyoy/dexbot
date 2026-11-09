@@ -70,7 +70,7 @@ Nothing needs to be supplied for Phase 1–2 work; RPC keys become useful at Pha
 - Chain ids: `solana`, `base`, `bsc`, `arbitrum`.
 
 **GeckoTerminal** (`https://api.geckoterminal.com/api/v2`)
-- Endpoints used: `/networks/{network}/new_pools`, `/networks/{network}/trending_pools`, `/networks/{network}/pools/{address}`, `/networks/{network}/pools/{address}/ohlcv/{timeframe}`, `/networks/{network}/pools/{address}/trades`.
+- Endpoints used: `/networks/{network}/new_pools`, `/networks/{network}/trending_pools`, `/networks/{network}/pools/{address}`, `/networks/{network}/pools/{address}/ohlcv/{timeframe}`, `/networks/{network}/pools/{address}/trades`, `/networks/{network}/pools/multi/{addresses}` (up to 30, includes unique buyers/sellers), `/networks/{network}/pools?sort=h24_volume_usd_desc` (top pools). All verified keyless.
 - **Keyless limit is very tight and dynamic** (docs: about 5 calls/min per IP, varying with load). Verified: a burst of 4 calls returned three 429s. Responses are cached server-side for roughly 30–60s (`cache-control: max-age=30, s-maxage=60`).
 - OHLCV: timeframes `day` (agg 1), `hour` (1, 4, 12), `minute` (1, 5, 15), `second` (1, 15, 30); `limit` max 1000; page back with `before_timestamp`. Newest candle first. Gaps are omitted unless `include_empty_intervals=true`.
 - Adds what DexScreener lacks: **unique buyers/sellers** per window (m5, m15, m30, h1, h6, h24), m15/m30 windows, OHLCV.
@@ -101,6 +101,8 @@ All tables have `created_at`/`updated_at` (UTC, `timestamptz`). Every chain-spec
 | `strategy_performance` | Aggregated stats per strategy/period | strategy, period, trades, win_rate, profit_factor, expectancy, max_dd, fees |
 | `config` | Versioned runtime configuration | key, value jsonb, version, changed_by |
 | `system_logs` | Important structured events | level, component, event, context jsonb |
+| `discovery_leads` | Every discovery lead and its screening outcome (Phase 2) | chain, token_address, pool_address, source, reason, profile, passed, rejections, metrics |
+| `watchlist` | Pools whose history is collected (Phase 2) | pool_id, profile, status, status_since, last_snapshot_at, consecutive_misses, next_ohlcv_at |
 
 Crash recovery: on startup the position manager loads every position not in a terminal state, reconciles each against the adapter (paper ledger or chain balance), and refuses to open new trades until reconciliation is clean. `transactions.idempotency_key` prevents duplicate orders across restarts.
 
@@ -138,7 +140,84 @@ Chain differences handled inside adapters, never assumed equal: Solana uses bloc
 | 8 | Dashboard | All listed panels and controls; live mode button requires explicit multi-step confirmation |
 | 9 | Controlled live deployment | Only after your explicit go-ahead, with tiny size and all risk checks on |
 
-## 8. Repository layout
+## 8. Discovery and market intelligence (Phase 2)
+
+The collector is a separate process (`python -m app.collector`, compose service `collector`). Each loop is isolated, so an exception in one never stops the others.
+
+### Discovery pipelines
+
+There are three pipelines. Each has its own sources, schedule, screening profile and stats, and records `pipeline` on every lead and watched pool.
+
+| Pipeline | Sources | Accepts | Screen |
+|---|---|---|---|
+| `new` | GeckoTerminal new pools (5 min), DexScreener profiles and boosts (1 min), GeckoTerminal trending (15 min) | pools 72h old or younger | new-token profile |
+| `established` | chain seeds: the verified quote assets' deepest pools (6h); GeckoTerminal top pools by 24h volume (1h) | pools older than 72h | established profile |
+| `momentum` | GeckoTerminal trending (shares the cached response) | pools older than 72h | established profile **and** momentum on the current, quality-checked snapshot |
+
+Sources are adapters (`app/discovery/sources.py`, protocol `DiscoverySource`), so adding a data source means adding one class. Leads are de-duplicated per `(chain, token)`, resolved to the deepest pool with an exitable quote via DexScreener's batched `/tokens/v1`, and screened. Every outcome is stored in `discovery_leads`, including rejected and unresolved leads, which keeps survivorship bias out of later analysis. Cheap sources run first. At most one rate-limited fetch runs per pipeline per cycle, and the most overdue chain goes first, so GeckoTerminal is never hit in bursts.
+
+### Collection loops
+
+| Loop | What it does |
+|---|---|
+| `snapshot` | DexScreener multi-pair snapshots of every watched pool (30 per request): active pools every 30s, inactive every 10 min, dead every 30 min. Each snapshot is quality-checked, turned into `pool_metrics`, and checked for momentum among watched pools (`momentum_events`). |
+| `buyers` | GeckoTerminal `pools/multi` (30 pools per request), one chain per tick in rotation, oldest-checked first. Provides **unique buyers and sellers** and a second-source cross-check against DexScreener. |
+| `ohlcv` | Initial 1m + 15m backfill (1000 candles each), then 1m refreshes. The queue rotates across chains, and within a chain puts never-backfilled and active pools first, so one chain's backlog cannot starve another. 5m, 1h and 4h candles are **resampled from stored 1m candles** on read (`/history/.../candles`), so they cost no API calls. |
+
+The GeckoTerminal priority gate serves discovery first, then buyers, then backfill.
+
+### Metrics (`pool_metrics`)
+
+- Volume acceleration: m5 against the h1 average, and h1 against the h24 average. Each is only computed when the pool is older than the longer window; otherwise it is an artefact of age and stays unknown.
+- Buy/sell ratio over m5 and h1.
+- Unique buyers and sellers over h1. These are only used if observed within 10 minutes. An older count is never substituted.
+- Liquidity change over 5 min and 1h, from our own snapshot history.
+- Provider price change.
+
+Any missing input produces `NULL`, never 0. `reliable` is false whenever an input carried a blocking quality flag.
+
+### Data quality (`app/quality/checks.py`)
+
+| Check | Meaning | Blocking |
+|---|---|---|
+| `stale` | fetch older than 90s (including cached responses, which keep their original fetch time) | yes |
+| `frozen` | an active pool's rolling counters unchanged for at least 3 min, so the provider stopped updating it | yes |
+| `missing_price`, `missing_liquidity`, `missing_activity` | field absent | yes |
+| `invalid_values` | negative values, or OHLC invariants broken | yes |
+| `missing_m5` | short window absent | no |
+| `liquidity_jump` | 50% or more change within 6 min (could be a real add or remove) | no |
+| `source_divergence_price` / `_liquidity` | DexScreener and GeckoTerminal disagree by more than 5% (price) or 30% (liquidity) | no |
+| `provider_unavailable` | a chain's batch fetch failed; nothing recorded, no misses counted | — |
+| `candle_gaps`, `candles_lagging`, `no_candles` | candle series checks on read | — |
+
+Flags are stored on the snapshot (`quality_flags`) and as rows in `data_quality_events`, and they are summarised by `/quality`. Flagged observations stay in the database, but they never enter the metric history and never trigger momentum.
+
+### Provenance
+
+Every snapshot row has `source` and `observed_at` (the real fetch time). Every candle has `source`, and every lead has `source`, `reason`, `pipeline` and `discovered_at`. Chains are a first-class column on every table and in every API response.
+
+### Restart recovery
+
+- Watchlist schedules (`last_snapshot_at`, `next_ohlcv_at`, `buyers_checked_at`) live in Postgres.
+- Discovery source schedules are persisted in `collector_state`, and recent screening times are rebuilt from `discovery_leads`.
+- Liquidity history (the last 2h of unflagged snapshots) and momentum cooldowns are rebuilt on start.
+- After a restart, nothing is re-fetched early and no rows are duplicated. Shutdown on SIGINT/SIGTERM cancels loops parked behind rate-limit penalties after a 10s grace period.
+
+### Lifecycle and survivorship
+
+- Watched pools move `active → inactive` (liquidity under $5k or no trades in an hour) `→ dead` (liquidity under $1k, or missing for 10 consecutive snapshots) `→ retired` (72h after going inactive or dead).
+- Dead pools are recorded until retirement.
+- An outage is never counted as a pool going missing.
+
+### Address validation
+
+Token addresses must be valid for the chain. EVM pool identifiers may be contract addresses or 32-byte pool ids (Uniswap v4 and similar). Launchpad bonding-curve pseudo-pairs (`…:4meme`) are rejected. The hardcoded quote-asset addresses are used only after a live symbol check.
+
+### Budget
+
+Keyless GeckoTerminal is the binding constraint. The default is 3 calls a minute: in live runs 5 a minute drew sustained 429s. The penalty is 30s, doubling up to 120s, with at most 2 retries. At that budget, the first backfill of N pools takes about N×2/3 minutes. DexScreener snapshots are the primary 30-second history and don't depend on GeckoTerminal.
+
+## 9. Repository layout
 
 ```
 dexbot/
@@ -153,9 +232,14 @@ dexbot/
       main.py               FastAPI app (health, market data endpoints)
       domain/               chain enum, market models (pure, no I/O)
       marketdata/           http client (rate limit, cache, retry, circuit breaker),
-                            providers (dexscreener, geckoterminal), aggregator
+                            providers (dexscreener, geckoterminal), aggregator, priority gate
+      discovery/            sources (adapters), pipelines (new/established/momentum), screening, validation
+      intelligence/         metrics engine, momentum detector
+      quality/              data-quality checks
+      collector/            collector worker (python -m app.collector)
       execution/            adapter interfaces (implementations in Phase 6–7)
-      db/                   SQLAlchemy models for the schema above
+      db/                   SQLAlchemy models, repository (idempotent upserts)
+    migrations/             Alembic
     tests/
       fixtures/             real responses captured from the live APIs
       unit tests; tests marked `live` hit real APIs and are opt-in

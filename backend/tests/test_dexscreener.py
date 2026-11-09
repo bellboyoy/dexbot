@@ -93,3 +93,15 @@ async def test_discover_filters_chains(load_fixture):
 async def test_unsupported_capabilities():
     with pytest.raises(CapabilityNotSupported):
         await provider().get_ohlcv(Chain.SOLANA, "x", None)
+
+
+@respx.mock
+async def test_get_pools_batches_and_filters(load_fixture):
+    data = load_fixture("dexscreener_pairs.json")
+    addr = data["pairs"][0]["pairAddress"]
+    route = respx.get(url__regex=rf"{BASE}/latest/dex/pairs/solana/.*").mock(return_value=httpx.Response(200, json=data))
+    from tests.factories import sol_addr
+    others = [sol_addr(1000 + i) for i in range(40)]
+    got = await provider().get_pools(Chain.SOLANA, [addr, *others, addr])
+    assert list(got) == [addr] and route.call_count == 2          # 41 unique -> 30 + 11
+    assert route.calls[0].request.url.path.count(",") == 29
