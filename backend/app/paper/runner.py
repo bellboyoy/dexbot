@@ -79,6 +79,7 @@ class _Mark:
 class _Entry:
     snap: PoolSnapshot
     strategy: str
+    params: dict
 
 
 def _exposure(rows: list[_Open]) -> list[OpenExposure]:
@@ -158,18 +159,20 @@ async def plan_cycle(*, market, screening: ScreeningEngine, risk: RiskEngine, li
         note = "no strategy passed validation; entries are disabled"
     else:
         note = None
+        scan_tf = Timeframe(validation.timeframe) if validation.timeframe else TIMEFRAME
         for snap, _decision in approved[:max_ohlcv]:
             try:
-                candles = await market.get_ohlcv(snap.chain, snap.pool_address, TIMEFRAME, 200)
+                candles = await market.get_ohlcv(snap.chain, snap.pool_address, scan_tf, 200)
             except ProviderError as exc:
                 errors.append(str(exc))
                 continue
             if len(candles) < 30:
                 continue
             for name in validation.passed:
-                signal = build_strategy(name).on_bar(candles)
+                params = (validation.configs or {}).get(name) or {}
+                signal = build_strategy(name, params).on_bar(candles)
                 if signal.action is Action.ENTER:
-                    entries.append(_Entry(snap, name))
+                    entries.append(_Entry(snap, name, params))
                     break
     return {
         "exits": exits, "marks": marks, "entries": entries, "screens": market_notes,
@@ -258,7 +261,7 @@ async def apply_cycle(session, *, plan: dict, account_starting: Decimal, risk: R
                             fee_rate=fee_rate_for_snapshot(snap), gas_usd=gas_usd(snap.chain))
             stop, take = stops_from_exec(fill.exec_price, limits)
             hold = decision.max_hold_until
-            strat = build_strategy(entry.strategy)
+            strat = build_strategy(entry.strategy, entry.params)
             if strat.max_hold_bars:
                 sooner = now + timedelta(minutes=TIMEFRAME.seconds // 60 * strat.max_hold_bars)
                 if hold is None or sooner < hold:
@@ -329,7 +332,7 @@ async def run_once(*, balance: Decimal | None = None) -> None:
     screening = ScreeningEngine(clients, thresholds_from_settings(settings))
     limits = limits_from_settings(settings)
     risk = RiskEngine(limits)
-    validation = ValidationFile(*_load())
+    validation = _load()
     now = datetime.now(timezone.utc)
     starting = balance if balance is not None else settings.paper_starting_balance_usd
     try:
@@ -360,10 +363,9 @@ async def run_once(*, balance: Decimal | None = None) -> None:
         await market.aclose()
 
 
-def _load():
+def _load() -> ValidationFile:
     from app.strategy.validation import load_validation
-    loaded = load_validation()
-    return loaded.passed, loaded.rejected, loaded.note, loaded.generated_at
+    return load_validation()
 
 
 async def run_loop(interval: float, balance: Decimal | None) -> None:

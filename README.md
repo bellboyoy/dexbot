@@ -101,6 +101,19 @@ export DEXBOT_LOG_LEVEL=WARNING DEXBOT_LOG_JSON=false
 
 This writes `docs/backtest-results.json` and `docs/strategy_validation.json`. If nothing passes, the paper runner will scan and screen but will not open positions.
 
+## Research round (out of sample)
+
+`python -m app.backtest` is the first fixed-parameter run. The research commands build a larger cached sample and only then search parameters. Search uses train pools and the earlier part of their history. A strategy is enabled for paper trading only if the frozen parameters also clear the time holdout, the pool holdout, a three-window walk-forward, and a neighbour check. The grid is 35 configurations, counted in `app/research/grid.py`.
+
+```bash
+cd backend
+export DEXBOT_LOG_LEVEL=WARNING DEXBOT_LOG_JSON=false
+.venv/bin/python -m app.research.collect --per-chain 8   # network, cached under data/market_cache
+.venv/bin/python -m app.research.validate                # no network; rewrites docs/strategy_validation.json
+```
+
+GeckoTerminal's keyless API has no historical new-pool archive (pages past 10 return 401) and OHLCV has no reserve column, so liquidity is the spot snapshot. The thin cohort is low spot liquidity and an age of at least a few hours. Results land in `docs/research-results.json`. The dashboard shows each strategy's paper P&L next to that out-of-sample expectancy.
+
 ## Paper runner
 
 Simulated starting balance defaults to $1,000 (`DEXBOT_PAPER_STARTING_BALANCE_USD`, or `--balance` the first time the account is created). Fills include the pool fee, gas and slippage. Restarts do not reset the book.

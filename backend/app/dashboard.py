@@ -40,7 +40,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
   </tr></thead><tbody></tbody></table>
   <h2>Per strategy</h2>
   <table id="strategies"><thead><tr>
-    <th>Strategy</th><th>Trades</th><th>Wins</th><th>Losses</th><th>Win rate</th><th>Avg win</th><th>Avg loss</th><th>Net</th><th>Open</th>
+    <th>Strategy</th><th>Paper trades</th><th>Wins</th><th>Losses</th><th>Win rate</th><th>Paper net</th><th>Open</th><th>Backtest OOS trades</th><th>Backtest OOS net</th><th>Backtest OOS exp</th><th>Passed</th>
   </tr></thead><tbody></tbody></table>
   <h2>System</h2>
   <pre id="system"></pre>
@@ -91,9 +91,10 @@ async function refresh() {
   const strat = document.querySelector("#strategies tbody");
   strat.innerHTML = (data.strategies || []).map(r => `<tr>
     <td>${r.strategy}</td><td>${r.trades}</td><td>${r.wins}</td><td>${r.losses}</td>
-    <td>${pct(r.win_rate)}</td><td>${money(r.average_win_usd)}</td><td>${money(r.average_loss_usd)}</td>
-    <td>${money(r.net_pnl_usd)}</td><td>${r.open_positions}</td>
-  </tr>`).join("") || `<tr><td colspan="9">No strategies</td></tr>`;
+    <td>${pct(r.win_rate)}</td><td>${money(r.net_pnl_usd)}</td><td>${r.open_positions}</td>
+    <td>${r.backtest_oos_trades ?? "n/a"}</td><td>${money(r.backtest_oos_net_pnl)}</td>
+    <td>${money(r.backtest_oos_expectancy)}</td><td>${r.backtest_passed === true ? "yes" : r.backtest_passed === false ? "no" : "n/a"}</td>
+  </tr>`).join("") || `<tr><td colspan="11">No strategies</td></tr>`;
   document.getElementById("system").textContent = JSON.stringify({
     trading_mode: s.trading_mode, execution: s.execution, kill_switch: s.kill_switch,
     kill_reason: s.kill_reason, cooldown_until: s.cooldown_until, last_scan_at: s.last_scan_at,

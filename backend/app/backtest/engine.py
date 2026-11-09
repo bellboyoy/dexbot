@@ -16,6 +16,7 @@ from app.paper.ledger import ClosedTrade, Ledger, OpenPos
 from app.risk.engine import AccountSnapshot, EntryRequest, OpenExposure, RiskEngine
 from app.risk.limits import RiskLimits
 from app.strategy.base import Action, Strategy
+from app.strategy.indicators import ema as _ema
 
 
 @dataclass(frozen=True, slots=True)
@@ -27,6 +28,12 @@ class PoolSeries:
     liquidity_usd: Decimal
     fee_rate: Decimal
     candles: list[Candle]
+    # Populated only when a real reserve history exists. Spot liquidity is the default,
+    # and a haircut series used as a sensitivity check must say so in `liquidity_source`.
+    liquidity_series: tuple[Decimal, ...] | None = None
+    liquidity_source: str = "spot_snapshot"
+    cohort: str = ""
+    pool_created_at: datetime | None = None
 
     @property
     def key(self) -> str:
@@ -44,6 +51,32 @@ class BacktestResult:
 def _closed_only(pool: PoolSeries) -> PoolSeries:
     candles = [c for c in pool.candles if c.is_closed and min(c.open, c.high, c.low, c.close) > 0]
     return replace(pool, candles=candles)
+
+
+def liquidity_at(pool: PoolSeries, index: int) -> Decimal:
+    series = pool.liquidity_series
+    if series is not None and 0 <= index < len(series) and series[index] > 0:
+        return series[index]
+    return pool.liquidity_usd
+
+
+def regime_allows(benchmark: list[Candle], when: datetime) -> bool:
+    """True when the benchmark's last closed bar at or before `when` is above its EMA20.
+
+    Bars after `when` are ignored, so the filter does not look ahead.
+    """
+    hist = [c for c in benchmark if c.is_closed and c.open_time <= when and c.close > 0]
+    if len(hist) < 21:
+        return False
+    closes = [float(c.close) for c in hist]
+    slow = _ema(closes, 20)
+    return slow[-1] is not None and closes[-1] > slow[-1]
+
+
+def ratchet_stop(stop: Decimal, high: Decimal, trail_pct: float | Decimal) -> Decimal:
+    """Long trailing stop. Only moves up."""
+    candidate = high * (Decimal(1) - Decimal(str(trail_pct)))
+    return candidate if candidate > stop else stop
 
 
 def _intrabar(pos: OpenPos, candle: Candle) -> tuple[str, Decimal] | None:
@@ -84,7 +117,8 @@ def _remember(state: dict, snap: AccountSnapshot) -> None:
 
 
 def run_backtest(strategy: Strategy, pools: list[PoolSeries], *, starting: Decimal = Decimal("1000"),
-                 limits: RiskLimits | None = None) -> BacktestResult:
+                 limits: RiskLimits | None = None,
+                 benchmarks: dict[Chain, list[Candle]] | None = None) -> BacktestResult:
     limits = limits or RiskLimits()
     risk = RiskEngine(limits)
     pools = [_closed_only(pool) for pool in pools]
@@ -111,15 +145,19 @@ def run_backtest(strategy: Strategy, pools: list[PoolSeries], *, starting: Decim
         gas = gas_usd(pool.chain)
         if key in pending_exit and key in ledger.positions:
             reason = pending_exit.pop(key)
-            _close(ledger, trades, risk, state, key, candle.open, candle.open_time, pool, gas, reason)
+            _close(ledger, trades, risk, state, key, candle.open, candle.open_time, pool, gas, reason, index)
         pending_exit.pop(key, None)
         if key in pending_entry and key not in ledger.positions:
             pending_entry.pop(key)
-            _try_open(ledger, risk, state, limits, strategy, pool, candle.open, candle.open_time, gas)
+            _try_open(ledger, risk, state, limits, strategy, pool, candle.open, candle.open_time, gas, index)
         hit = _intrabar(ledger.positions[key], candle) if key in ledger.positions else None
         if hit is not None:
             pending_exit.pop(key, None)
-            _close(ledger, trades, risk, state, key, hit[1], candle.open_time, pool, gas, hit[0])
+            _close(ledger, trades, risk, state, key, hit[1], candle.open_time, pool, gas, hit[0], index)
+        trail = getattr(strategy, "trail_pct", None)
+        if trail and key in ledger.positions:
+            pos = ledger.positions[key]
+            pos.stop = ratchet_stop(pos.stop, candle.high, trail)
         if key in ledger.positions:
             ledger.mark(key, candle.close)
             pos = ledger.positions[key]
@@ -134,7 +172,7 @@ def run_backtest(strategy: Strategy, pools: list[PoolSeries], *, starting: Decim
                     pending_exit[key] = "signal"
         else:
             signal = strategy.on_bar(pool.candles[:index + 1])
-            if signal.action is Action.ENTER and key not in pending_entry:
+            if signal.action is Action.ENTER and key not in pending_entry and _regime_ok(strategy, pool, candle, benchmarks):
                 pending_entry[key] = pool
         equity.append(ledger.equity)
 
@@ -142,22 +180,33 @@ def run_backtest(strategy: Strategy, pools: list[PoolSeries], *, starting: Decim
         pool = by_key[key]
         last = pool.candles[-1]
         gas = gas_usd(pool.chain)
-        _close(ledger, trades, risk, state, key, last.close, last.close_time, pool, gas, "end_of_data")
+        _close(ledger, trades, risk, state, key, last.close, last.close_time, pool, gas, "end_of_data",
+               len(pool.candles) - 1)
         equity.append(ledger.equity)
     return BacktestResult(strategy.name, trades, equity, len(events))
 
 
+def _regime_ok(strategy, pool: PoolSeries, candle: Candle, benchmarks: dict[Chain, list[Candle]] | None) -> bool:
+    if not getattr(strategy, "use_regime", False):
+        return True
+    bench = (benchmarks or {}).get(pool.chain)
+    if not bench:
+        return False
+    return regime_allows(bench, candle.open_time)
+
+
 def _try_open(ledger, risk, state, limits, strategy, pool: PoolSeries, mid: Decimal, when: datetime,
-              gas: Decimal) -> None:
+              gas: Decimal, index: int) -> None:
+    liquidity = liquidity_at(pool, index)
     snap = _snapshot(ledger, state, when, limits)
     decision = risk.evaluate_entry(snap, EntryRequest(
         chain=pool.chain, pool_address=pool.pool_address, token_address=pool.token_address,
-        strategy=strategy.name, mid_price=mid, liquidity_usd=pool.liquidity_usd, fee_rate=pool.fee_rate, now=when,
+        strategy=strategy.name, mid_price=mid, liquidity_usd=liquidity, fee_rate=pool.fee_rate, now=when,
     ))
     _remember(state, snap)
     if not decision.approved or decision.size_usd is None:
         return
-    fill = buy_fill(mid=mid, notional=decision.size_usd, liquidity=pool.liquidity_usd,
+    fill = buy_fill(mid=mid, notional=decision.size_usd, liquidity=liquidity,
                     fee_rate=pool.fee_rate, gas_usd=gas)
     stop = fill.exec_price * (Decimal(1) - decision.stop_loss_pct)
     take = fill.exec_price * (Decimal(1) + decision.take_profit_pct)
@@ -166,14 +215,14 @@ def _try_open(ledger, risk, state, limits, strategy, pool: PoolSeries, mid: Deci
         strategy=strategy.name, qty=fill.qty, cost_basis=fill.quote_spent + fill.gas_usd,
         entry_exec=fill.exec_price, entry_mid=mid, opened_at=when, stop=stop, take_profit=take,
         max_hold_until=decision.max_hold_until, max_hold_bars=strategy.max_hold_bars,
-        liquidity=pool.liquidity_usd, fee_rate=pool.fee_rate, gas_per_tx=gas, fees=fill.fee_usd,
+        liquidity=liquidity, fee_rate=pool.fee_rate, gas_per_tx=gas, fees=fill.fee_usd,
         gas=fill.gas_usd, slippage=fill.slippage_usd, notional=fill.quote_spent,
     ), fill)
 
 
-def _close(ledger, trades, risk, state, key, mid, when, pool: PoolSeries, gas, reason: str) -> None:
+def _close(ledger, trades, risk, state, key, mid, when, pool: PoolSeries, gas, reason: str, index: int) -> None:
     pos = ledger.positions[key]
-    fill = sell_fill(qty=pos.qty, mid=mid, liquidity=pool.liquidity_usd, fee_rate=pool.fee_rate, gas_usd=gas)
+    fill = sell_fill(qty=pos.qty, mid=mid, liquidity=liquidity_at(pool, index), fee_rate=pool.fee_rate, gas_usd=gas)
     trade = ledger.close_position(key, fill, reason, when)
     trades.append(trade)
     snap = _snapshot(ledger, state, when, RiskLimits())

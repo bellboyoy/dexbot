@@ -19,13 +19,20 @@ class Momentum:
     name = "momentum"
     version = "1.0.0"
     max_hold_bars = None
+    trail_pct = None
+    use_regime = False
+
+    def __init__(self, fast: int = FAST, slow: int = SLOW, use_regime: bool = False):
+        self.fast = fast
+        self.slow = slow
+        self.use_regime = use_regime
 
     def on_bar(self, candles: Sequence[Candle]) -> Signal:
         closes = [float(c.close) for c in candles]
-        if len(closes) < SLOW + 2:
+        if len(closes) < self.slow + 2:
             return Signal(self.name, Action.HOLD, "warmup")
-        fast = ema(closes, FAST)
-        slow = ema(closes, SLOW)
+        fast = ema(closes, self.fast)
+        slow = ema(closes, self.slow)
         strength = rsi(closes, RSI_PERIOD)
         f0, f1 = fast[-2], fast[-1]
         s0, s1 = slow[-2], slow[-1]

@@ -13,18 +13,25 @@ MULTIPLE = 3.0
 class VolumeSpike:
     name = "volume_spike"
     version = "1.0.0"
-    max_hold_bars = 6
+    trail_pct = None
+    use_regime = False
+
+    def __init__(self, multiple: float = MULTIPLE, hold: int = 6, lookback: int = LOOKBACK):
+        self.multiple = multiple
+        self.max_hold_bars = hold
+        self.lookback = lookback
 
     def on_bar(self, candles: Sequence[Candle]) -> Signal:
-        if len(candles) < LOOKBACK + 2:
+        lookback = self.lookback
+        if len(candles) < lookback + 2:
             return Signal(self.name, Action.HOLD, "warmup")
         vols = [float(c.volume_usd) for c in candles]
-        baseline = sum(vols[-(LOOKBACK + 1):-1]) / LOOKBACK
-        prev_baseline = sum(vols[-(LOOKBACK + 2):-2]) / LOOKBACK
+        baseline = sum(vols[-(lookback + 1):-1]) / lookback
+        prev_baseline = sum(vols[-(lookback + 2):-2]) / lookback
         last = candles[-1]
         prev = candles[-2]
-        spiked = baseline > 0 and vols[-1] > MULTIPLE * baseline
-        prev_spiked = prev_baseline > 0 and vols[-2] > MULTIPLE * prev_baseline
+        spiked = baseline > 0 and vols[-1] > self.multiple * baseline
+        prev_spiked = prev_baseline > 0 and vols[-2] > self.multiple * prev_baseline
         green = last.close > last.open and last.close > prev.close
         if spiked and green and not prev_spiked:
             return Signal(self.name, Action.ENTER, "volume spike on an up bar")

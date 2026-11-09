@@ -24,3 +24,6 @@ __pycache__/
 # Node (frontend, Phase 8)
 node_modules/
 .next/
+
+# Cached OHLCV from the research collector. Regenerated locally; not a secret.
+data/market_cache/

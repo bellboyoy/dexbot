@@ -54,6 +54,12 @@ Added on top of Phase 1, still paper-only. `Settings.trading_mode` is unchanged.
 
 The backtest result and the list of strategies the runner may open are generated, not hand-written: `docs/backtest-results.json` and `docs/strategy_validation.json`.
 
+## Research round (2026-11-09)
+
+Cached a 14-pool Solana/Base sample (thin, mid, and liquid cohorts; 15m, 5m, and 1m) and searched a pre-registered grid of 35 configurations on the train set only. Nothing passed the out-of-sample gate. Details are in `docs/research-results.json`. The paper runner still opens nothing.
+
+The keyless GeckoTerminal API does not provide a historical new-pool archive or reserve history. Liquidity in that study is the spot snapshot.
+
 ## Next
 
-Keep collecting our own snapshots. The free OHLCV history is too short, and too biased toward pools that are still listed, to treat a single backtest pass as an edge. Redis is still not the shared cache. Live execution remains unbuilt and unauthorised.
+Keep collecting our own snapshots, including liquidity. The free OHLCV history is too short, and too biased toward pools that are still listed, to treat a single backtest pass as an edge. Redis is still not the shared cache. Live execution remains unbuilt and unauthorised.

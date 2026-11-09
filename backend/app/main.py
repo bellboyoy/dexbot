@@ -98,6 +98,20 @@ async def _paper_ledger() -> dict:
         raise HTTPException(503, "paper ledger database unavailable") from exc
     data["validated_strategies"] = list(validation.passed)
     data["validation_note"] = validation.note
+    data["validation_timeframe"] = validation.timeframe
+    data["configs_tried"] = None
+    by_name = {row["strategy"]: row for row in data.get("strategies") or []}
+    for name, stats in (validation.backtest or {}).items():
+        row = by_name.setdefault(name, {"strategy": name, "trades": 0, "wins": 0, "losses": 0,
+                                        "win_rate": None, "average_win_usd": None, "average_loss_usd": None,
+                                        "net_pnl_usd": "0", "fees_usd": "0", "gas_usd": "0", "open_positions": 0})
+        row["backtest_oos_expectancy"] = stats.get("oos_expectancy")
+        row["backtest_oos_net_pnl"] = stats.get("oos_net_pnl")
+        row["backtest_oos_trades"] = stats.get("oos_trades")
+        row["backtest_train_expectancy"] = stats.get("train_expectancy")
+        row["backtest_passed"] = stats.get("passed")
+        row["backtest_reason"] = stats.get("reason")
+    data["strategies"] = [by_name[k] for k in sorted(by_name)]
     data["providers"] = _market().health()
     return data
 

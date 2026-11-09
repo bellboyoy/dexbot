@@ -22,6 +22,11 @@ class MeanReversion:
     name = "mean_reversion"
     version = "1.0.0"
     max_hold_bars = None
+    trail_pct = None
+    use_regime = False
+
+    def __init__(self, entry_rsi: float = ENTRY_RSI):
+        self.entry_rsi = entry_rsi
 
     def on_bar(self, candles: Sequence[Candle]) -> Signal:
         closes = [float(c.close) for c in candles]
@@ -36,6 +41,6 @@ class MeanReversion:
         if r1 > EXIT_RSI or closes[-1] >= m1:
             return Signal(self.name, Action.EXIT, "reverted toward the mean" if closes[-1] >= m1 else "rsi recovered")
         lower = m1 - BANDS * s1
-        if r0 >= ENTRY_RSI and r1 < ENTRY_RSI and closes[-1] < lower:
+        if r0 >= self.entry_rsi and r1 < self.entry_rsi and closes[-1] < lower:
             return Signal(self.name, Action.ENTER, "rsi crossed below 30 under the lower band")
         return Signal(self.name, Action.HOLD, "no stretch")

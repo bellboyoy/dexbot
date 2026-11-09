@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import json
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from decimal import Decimal
 from pathlib import Path
@@ -40,9 +40,9 @@ class GateResult:
 
 
 def gate(trades: int, net_pnl: Decimal, expectancy: Decimal | None, profit_factor: Decimal | None,
-         max_drawdown_pct: Decimal) -> GateResult:
-    if trades < MIN_TRADES:
-        return GateResult(False, f"inconclusive: {trades} trades is below {MIN_TRADES}")
+         max_drawdown_pct: Decimal, min_trades: int = MIN_TRADES) -> GateResult:
+    if trades < min_trades:
+        return GateResult(False, f"inconclusive: {trades} trades is below {min_trades}")
     if net_pnl <= 0:
         return GateResult(False, "net P&L after costs is not positive")
     if expectancy is None or expectancy <= 0:
@@ -75,6 +75,9 @@ class ValidationFile:
     rejected: dict[str, str]
     note: str
     generated_at: str | None
+    configs: dict = field(default_factory=dict)
+    backtest: dict = field(default_factory=dict)
+    timeframe: str = "5m"
 
 
 def load_validation(path: Path | None = None) -> ValidationFile:
@@ -87,7 +90,12 @@ def load_validation(path: Path | None = None) -> ValidationFile:
         return ValidationFile((), {}, "validation file is unreadable; paper entries are disabled", None)
     passed = tuple(str(name) for name in data.get("passed") or [])
     rejected = {str(k): str(v) for k, v in (data.get("rejected") or {}).items()}
-    return ValidationFile(passed, rejected, str(data.get("note") or SAMPLE_NOTE), data.get("generated_at"))
+    configs = data.get("configs") if isinstance(data.get("configs"), dict) else {}
+    backtest = data.get("backtest") if isinstance(data.get("backtest"), dict) else {}
+    return ValidationFile(
+        passed, rejected, str(data.get("note") or SAMPLE_NOTE), data.get("generated_at"),
+        configs=configs, backtest=backtest, timeframe=str(data.get("timeframe") or "5m"),
+    )
 
 
 def dump_validation(payload: dict, path: Path | None = None) -> Path:
