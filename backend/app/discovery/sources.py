@@ -29,6 +29,7 @@ class DiscoverySource(Protocol):
     name: str
     every: timedelta
     per_chain: bool        # True: fetch([chain]) is called once per chain
+    gated: bool            # True: uses scarce (rate-limited) provider capacity
 
     async def fetch(self, chains: list[Chain]) -> list[Lead]: ...
 
@@ -36,6 +37,7 @@ class DiscoverySource(Protocol):
 class DexScreenerFeed:
     """Latest token profiles or (paid) boosts. One call covers all chains."""
     per_chain = False
+    gated = False
 
     def __init__(self, ds: DexScreenerProvider, kind: str, every: timedelta = timedelta(seconds=60)):
         self.ds, self.kind, self.every = ds, kind, every
@@ -49,6 +51,7 @@ class DexScreenerFeed:
 class GeckoPoolFeed:
     """GeckoTerminal pool lists (new_pools, trending, top_pools). Scarce budget: gated."""
     per_chain = True
+    gated = True
 
     def __init__(self, gt: GeckoTerminalProvider, gate: PriorityGate, kind: str, every: timedelta):
         self.gt, self.gate, self.kind, self.every = gt, gate, kind, every
@@ -67,6 +70,7 @@ class QuoteSeedFeed:
     """Established seeds: each chain's verified quote assets (SOL, WETH, WBNB, stables).
     Their deepest pools anchor the established universe."""
     per_chain = True
+    gated = False
 
     def __init__(self, verified_quotes: dict[Chain, set[str]], every: timedelta = timedelta(hours=6)):
         self.verified, self.every, self.name = verified_quotes, every, "established_seed"

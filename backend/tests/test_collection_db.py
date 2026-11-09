@@ -229,3 +229,26 @@ async def test_shutdown_cancels_loops_stuck_behind_rate_limits(pg_sessionmaker):
     await asyncio.sleep(0.3)
     stop.set()
     await asyncio.wait_for(runner, 2)               # returns promptly instead of hanging
+
+
+async def test_ohlcv_queue_rotates_across_chains(pg_sessionmaker):
+    """A large backlog on one chain must not starve the others (seen live: Solana took every slot)."""
+    from app.db import repository as repo
+    sm = pg_sessionmaker
+    evm = lambda i: f"0x{i:040x}"
+    async with sm() as s:
+        async def add(chain, pool, token, quote, status, due):
+            pid = await repo.upsert_pool(s, snap(chain=chain, pool=pool, token=token, quote=quote))
+            await repo.watch_pool(s, pool_id=pid, chain=chain, base_token_address=token, profile="new",
+                                  discovered_via="test", now=due)
+            await s.execute(WatchedPool.__table__.update().where(WatchedPool.pool_id == pid).values(status=status))
+        for i in range(5):                                    # Solana backlog, most overdue
+            await add(Chain.SOLANA, sol_addr(100 + i), sol_addr(200 + i), WSOL, "active", NOW - timedelta(hours=2))
+        await add(Chain.BASE, evm(1), evm(2), evm(3), "active", NOW - timedelta(minutes=1))
+        await add(Chain.BSC, evm(11), evm(12), evm(13), "dead", NOW - timedelta(hours=3))
+        await add(Chain.BSC, evm(21), evm(22), evm(23), "active", NOW - timedelta(minutes=1))
+        await s.commit()
+        jobs = await repo.due_for_ohlcv(s, NOW, 3)
+    assert sorted(wp.chain.value for wp, _ in jobs) == ["base", "bsc", "solana"]
+    bsc = next(addr for wp, addr in jobs if wp.chain == Chain.BSC)
+    assert bsc == evm(21)                                     # active before dead within a chain

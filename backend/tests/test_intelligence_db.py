@@ -120,9 +120,11 @@ async def scalar(sm, q):
 async def test_pipelines_route_by_age_and_dedupe_across_providers(pg_sessionmaker):
     sm, clock = pg_sessionmaker, Clock()
     _, _, new, est, _ = build(sm, clock)
-    n = await new.run_once()
+    n = await new.run_once()                       # new_pools feed (one scarce fetch per cycle)
+    clock.now += timedelta(seconds=61)
+    n2 = await new.run_once()                      # trending feed
     e = await est.run_once()
-    assert n.added == 1 and n.other_profile == 1          # trending old pool left to the established pipeline
+    assert n.added == 1 and n2.other_profile == 1  # trending old pool left to the established pipeline
     assert e.added == 1
     async with sm() as s:
         rows = (await s.execute(select(WatchedPool.pipeline, WatchedPool.profile))).all()
@@ -241,3 +243,18 @@ async def test_momentum_pipeline_requires_momentum(pg_sessionmaker):
     assert st.added == 1
     async with sm() as s:
         assert (await s.execute(select(WatchedPool.pipeline))).scalar_one() == "momentum"
+
+
+async def test_scarce_sources_capped_per_cycle_and_rotated(pg_sessionmaker):
+    sm, clock = pg_sessionmaker, Clock()
+    ds = DS(clock)
+    gt = GT(clock, ds)
+    gate = PriorityGate()
+    cfg = PipelineConfig(chains=(Chain.SOLANA, Chain.BASE, Chain.BSC), max_gated_per_cycle=1)
+    p = NewLaunchPipeline([GeckoPoolFeed(gt, gate, "new_pools", timedelta(minutes=5)), QuoteSeedFeed(VERIFIED)],
+                          ds, sm, SCREEN, cfg, clock=clock)
+    for _ in range(3):
+        await p.run_once()
+        clock.now += timedelta(seconds=60)
+    assert gt.calls == 3                         # one GeckoTerminal call per cycle, never a burst
+    assert {k.split(":")[1] for k in p._last_run if k.startswith("geckoterminal")} == {"solana", "base", "bsc"}

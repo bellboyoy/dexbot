@@ -29,7 +29,9 @@ The `migrate` service runs `alembic upgrade head` against a fresh database and e
 The `collector` service discovers tokens on every enabled chain, screens them, and records history for the pools it watches: DexScreener snapshots every 30 seconds and 1-minute candles from GeckoTerminal. Check what it has recorded with:
 
 ```bash
-curl localhost:8000/collector/status
+curl localhost:8000/collector/status                       # per chain: watchlist, snapshots, candles, leads, momentum
+curl "localhost:8000/quality?hours=24"                     # data-quality events by chain, provider and check
+curl "localhost:8000/history/solana/pools/<pool>/candles?timeframe=1h"   # stored candles (resampled from 1m if needed)
 docker compose logs -f collector
 ```
 

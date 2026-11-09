@@ -10,7 +10,7 @@ from datetime import datetime, timedelta
 from decimal import Decimal
 from typing import Any, Iterable
 
-from sqlalchemy import func, select, update
+from sqlalchemy import case, func, select, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -132,9 +132,20 @@ async def due_for_snapshot(session: AsyncSession, now: datetime, intervals: dict
 
 
 async def due_for_ohlcv(session: AsyncSession, now: datetime, limit: int) -> list[tuple[WatchedPool, str]]:
-    q = (select(WatchedPool, Pool.address).join(Pool, Pool.id == WatchedPool.pool_id)
-         .where(WatchedPool.status.in_(["active", "inactive", "dead"]), WatchedPool.next_ohlcv_at <= now)
-         .order_by(WatchedPool.ohlcv_backfilled, WatchedPool.next_ohlcv_at).limit(limit))
+    """Due OHLCV jobs, rotating across chains so one chain's backlog cannot starve the others.
+    Within a chain: pools never backfilled first, then active before inactive/dead, then most overdue."""
+    status_rank = case((WatchedPool.status == "active", 0), (WatchedPool.status == "inactive", 1), else_=2)
+    within_chain = (WatchedPool.ohlcv_backfilled, status_rank, WatchedPool.next_ohlcv_at)
+    ranked = (select(WatchedPool.id.label("wid"),
+                     func.row_number().over(partition_by=WatchedPool.chain, order_by=within_chain).label("rn"),
+                     WatchedPool.ohlcv_backfilled.label("bf"), status_rank.label("sr"),
+                     WatchedPool.next_ohlcv_at.label("due"))
+              .where(WatchedPool.status.in_(["active", "inactive", "dead"]), WatchedPool.next_ohlcv_at <= now)
+              .subquery())
+    q = (select(WatchedPool, Pool.address)
+         .join(ranked, ranked.c.wid == WatchedPool.id)
+         .join(Pool, Pool.id == WatchedPool.pool_id)
+         .order_by(ranked.c.rn, ranked.c.bf, ranked.c.sr, ranked.c.due).limit(limit))
     return list((await session.execute(q)).all())
 
 

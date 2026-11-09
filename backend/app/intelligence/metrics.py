@@ -109,6 +109,12 @@ class MetricsEngine:
         if b is not None and abs(at - b[0]) <= self.cfg.buyers_max_age:
             buyers_at, buyers, sellers = b
 
+        # A rolling window longer than the pool's life does not hold a full window of
+        # history, so "acceleration" against it would be an artefact of age: leave it unknown.
+        age = snap.pool_age(at)
+        accel_m5_ok = age is not None and age >= timedelta(hours=1)
+        accel_h1_ok = age is not None and age >= timedelta(hours=24)
+
         def change(lag):
             prev = self._lookup(key, at, lag)
             if prev is None or snap.liquidity_usd is None or prev <= 0:
@@ -119,8 +125,10 @@ class MetricsEngine:
             chain=snap.chain, pool_address=snap.pool_address, observed_at=at, source=snap.source.value,
             price_usd=snap.price_usd, liquidity_usd=snap.liquidity_usd,
             volume_m5_usd=m5.volume_usd, volume_h1_usd=h1.volume_usd,
-            volume_accel_m5=_ratio(m5.volume_usd, None if h1.volume_usd is None else h1.volume_usd / 12),
-            volume_accel_h1=_ratio(h1.volume_usd, None if h24.volume_usd is None else h24.volume_usd / 24),
+            volume_accel_m5=_ratio(m5.volume_usd, None if h1.volume_usd is None else h1.volume_usd / 12)
+            if accel_m5_ok else None,
+            volume_accel_h1=_ratio(h1.volume_usd, None if h24.volume_usd is None else h24.volume_usd / 24)
+            if accel_h1_ok else None,
             buy_ratio_m5=None if not txns_m5 else _ratio(Decimal(m5.buys), Decimal(txns_m5)),
             buy_ratio_h1=None if not txns_h1 else _ratio(Decimal(h1.buys), Decimal(txns_h1)),
             txns_m5=txns_m5, buyers_h1=buyers, sellers_h1=sellers, buyers_observed_at=buyers_at,

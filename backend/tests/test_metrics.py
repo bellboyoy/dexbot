@@ -18,7 +18,7 @@ def with_windows(s, **w):
 
 
 def test_volume_acceleration_and_buy_ratio():
-    s = with_windows(snap(), m5=WindowStats(buys=30, sells=10, volume_usd=Decimal(3000)),
+    s = with_windows(snap(age=timedelta(days=3)), m5=WindowStats(buys=30, sells=10, volume_usd=Decimal(3000)),
                      h1=WindowStats(buys=60, sells=40, volume_usd=Decimal(12000)),
                      h24=WindowStats(buys=900, sells=800, volume_usd=Decimal(96000)))
     m = MetricsEngine().compute(s, OK)
@@ -80,3 +80,13 @@ def test_momentum_cooldown():
     assert det.evaluate(m, "established") is None                   # within cooldown
     m.observed_at = NOW + timedelta(minutes=16)
     assert det.evaluate(m, "established") is not None
+
+
+def test_acceleration_unknown_for_pools_younger_than_the_window():
+    s = with_windows(snap(age=timedelta(minutes=40)), m5=WindowStats(buys=3, sells=2, volume_usd=Decimal(3000)),
+                     h1=WindowStats(buys=6, sells=4, volume_usd=Decimal(3500)),
+                     h24=WindowStats(buys=6, sells=4, volume_usd=Decimal(3500)))
+    m = MetricsEngine().compute(s, OK)
+    assert m.volume_accel_m5 is None and m.volume_accel_h1 is None
+    m2 = MetricsEngine().compute(replace(s, pool_created_at=NOW - timedelta(hours=3)), OK)
+    assert m2.volume_accel_m5 is not None and m2.volume_accel_h1 is None

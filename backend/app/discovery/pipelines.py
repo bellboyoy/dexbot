@@ -54,6 +54,9 @@ class PipelineConfig:
     chains: tuple[Chain, ...]
     max_watchlist: int = 300
     rescreen_after: timedelta = timedelta(minutes=10)
+    # Rate-limited fetches per cycle. The rest stay due and run next cycle, so cheap
+    # sources are never held up behind a queue of scarce ones.
+    max_gated_per_cycle: int = 1
 
 
 def best_pool(snaps: list[PoolSnapshot], token: str, cfg: ScreeningConfig) -> PoolSnapshot | None:
@@ -104,16 +107,26 @@ class DiscoveryPipeline:
     async def gather(self, now: datetime, stats: PipelineStats) -> list[Lead]:
         leads: list[Lead] = []
         ran: dict[str, datetime] = {}
+        gated_used = 0
+        # Cheap sources first; among scarce ones, the most overdue goes first.
+        jobs = []
         for src in self.sources:
             for chains in ([[c] for c in self.cfg.chains] if src.per_chain else [list(self.cfg.chains)]):
                 key = f"{src.name}:{chains[0].value}" if src.per_chain else src.name
-                if not self._due(key, src.every, now):
+                if self._due(key, src.every, now):
+                    never = datetime.min.replace(tzinfo=now.tzinfo)
+                    jobs.append((getattr(src, "gated", False), self._last_run.get(key, never), key, src, chains))
+        jobs.sort(key=lambda j: (j[0], j[1]))
+        for gated, _, key, src, chains in jobs:
+            if gated:
+                if gated_used >= self.cfg.max_gated_per_cycle:
                     continue
-                try:
-                    leads.extend(await src.fetch(chains))
-                    ran[key] = now
-                except ProviderError as exc:
-                    stats.source_errors.append(f"{key}: {exc}")      # retried next cycle
+                gated_used += 1
+            try:
+                leads.extend(await src.fetch(chains))
+                ran[key] = now
+            except ProviderError as exc:
+                stats.source_errors.append(f"{key}: {exc}")          # retried next cycle
         if ran:
             self._last_run.update(ran)
             async with self.sm() as s:
