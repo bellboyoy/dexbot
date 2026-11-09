@@ -60,6 +60,8 @@ Cached a 14-pool Solana/Base sample (thin, mid, and liquid cohorts; 15m, 5m, and
 
 The keyless GeckoTerminal API does not provide a historical new-pool archive or reserve history. Liquidity in that study is the spot snapshot.
 
+A launch collector (`python -m app.collector`) now records Solana and Base pools from first sight through 24 hours, including missed slots and pools that 404 later. Validation of that point-in-time set waits until 14 days and 30 pools exist (`python -m app.research.pit`). See `docs/RUNNING.md`.
+
 ## Next
 
 Keep collecting our own snapshots, including liquidity. The free OHLCV history is too short, and too biased toward pools that are still listed, to treat a single backtest pass as an edge. Redis is still not the shared cache. Live execution remains unbuilt and unauthorised.

@@ -75,6 +75,14 @@ class Settings(BaseSettings):
     screen_lp_lock_young_hours: int = 72
     screen_min_lp_locked_pct: Decimal = Decimal("80")
 
+    # Point-in-time launch collector. GT calls are kept far below the shared ~5/min IP budget.
+    collector_poll_s: float = 20.0
+    collector_gt_interval_s: float = 180.0
+    collector_max_active: int = 200
+    collector_max_new_per_day: int = 150
+    collector_snapshots_per_cycle: int = 4
+    collector_screens_per_cycle: int = 2
+
     @field_validator("enabled_chains", mode="before")
     @classmethod
     def _split_chains(cls, v: object) -> object:

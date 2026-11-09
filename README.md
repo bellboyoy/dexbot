@@ -4,6 +4,7 @@ Multi-chain (Solana, Base, BSC; Arbitrum later) short-term DEX trading system. *
 
 - [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md): design, credentials, provider limits, schema and phase plan
 - [docs/PROGRESS.md](docs/PROGRESS.md): what is done, what was verified, and known issues
+- [docs/RUNNING.md](docs/RUNNING.md): how to run the API, the paper runner, and the launch collector on a small box
 - [docs/AUDIT.md](docs/AUDIT.md): audit of the Phase 1 layer and the paper stack
 - [docs/backtest-results.json](docs/backtest-results.json): latest backtest, written by the command below
 - [docs/strategy_validation.json](docs/strategy_validation.json): which strategies the paper runner is allowed to open
@@ -152,3 +153,14 @@ With uvicorn running:
 - http://127.0.0.1:8000/api/paper/strategies
 
 The page is labelled PAPER. Simulated balance is mark-to-market equity. Realised P&L is closed round trips. Unrealised P&L is an estimated exit (fee, slippage, gas) on open positions, so a new position is negative until price moves enough to pay the exit. Net P&L is the sum of the two.
+
+## Launch collector
+
+Records new Solana and Base pools as they appear, including ones that later die, and snapshots them at 1, 5, 15, 30, 60 and 240 minutes, then hourly through 24 hours. DexScreener does the bulk reads. GeckoTerminal is limited to one call every 3 minutes. At the default cap of 150 new pools per day that is about 10 MB/day including indexes. See [docs/RUNNING.md](docs/RUNNING.md).
+
+```bash
+cd backend
+.venv/bin/python -m app.collector          # continuous
+.venv/bin/python -m app.collector --once   # one cycle
+.venv/bin/python -m app.research.pit       # inventory now; validation only after ~14 days
+```

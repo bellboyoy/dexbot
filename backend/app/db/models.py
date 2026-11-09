@@ -199,6 +199,68 @@ class Transaction(Timestamps, Base):
     details: Mapped[dict[str, Any] | None]
 
 
+class LaunchWatch(Timestamps, Base):
+    """A newly seen pool followed until about 24 hours after launch. No execution."""
+    __tablename__ = "launch_watches"
+    __table_args__ = (
+        UniqueConstraint("chain", "pool_address"),
+        Index("ix_launch_watches_due", "status", "next_due_at"),
+    )
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    chain: Mapped[Chain] = mapped_column(CHAIN)
+    pool_address: Mapped[str] = mapped_column(String(64))
+    token_address: Mapped[str] = mapped_column(String(64))
+    quote_address: Mapped[str | None] = mapped_column(String(64))
+    symbol: Mapped[str | None] = mapped_column(String(64))
+    dex_id: Mapped[str | None] = mapped_column(String(64))
+    pool_created_at: Mapped[datetime | None]
+    first_seen_at: Mapped[datetime]
+    launch_at: Mapped[datetime]
+    status: Mapped[str] = mapped_column(String(16))
+    next_due_at: Mapped[datetime | None]
+    snapshots_taken: Mapped[int] = mapped_column(Integer)
+    last_error: Mapped[str | None] = mapped_column(Text)
+
+
+class LaunchSnapshot(Base):
+    """One scheduled observation. A missed slot is stored with null market fields, not invented numbers."""
+    __tablename__ = "launch_snapshots"
+    __table_args__ = (
+        UniqueConstraint("watch_id", "age_minutes"),
+        Index("ix_launch_snapshots_watch", "watch_id"),
+    )
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    watch_id: Mapped[int] = mapped_column(ForeignKey("launch_watches.id"))
+    chain: Mapped[Chain] = mapped_column(CHAIN)
+    age_minutes: Mapped[int] = mapped_column(Integer)
+    due_at: Mapped[datetime]
+    observed_at: Mapped[datetime | None]
+    missed: Mapped[bool] = mapped_column(Boolean)
+    not_found: Mapped[bool] = mapped_column(Boolean)
+    source: Mapped[str | None] = mapped_column(String(32))
+    price_usd: Mapped[Decimal | None] = mapped_column(USD)
+    liquidity_usd: Mapped[Decimal | None] = mapped_column(USD)
+    fdv_usd: Mapped[Decimal | None] = mapped_column(USD)
+    market_cap_usd: Mapped[Decimal | None] = mapped_column(USD)
+    base_reserve: Mapped[Decimal | None] = mapped_column(USD)
+    quote_reserve: Mapped[Decimal | None] = mapped_column(USD)
+    volume_m5: Mapped[Decimal | None] = mapped_column(USD)
+    volume_h1: Mapped[Decimal | None] = mapped_column(USD)
+    volume_h24: Mapped[Decimal | None] = mapped_column(USD)
+    buys_m5: Mapped[int | None] = mapped_column(Integer)
+    sells_m5: Mapped[int | None] = mapped_column(Integer)
+    buys_h1: Mapped[int | None] = mapped_column(Integer)
+    sells_h1: Mapped[int | None] = mapped_column(Integer)
+    buyers_m5: Mapped[int | None] = mapped_column(Integer)
+    sellers_m5: Mapped[int | None] = mapped_column(Integer)
+    buyers_h1: Mapped[int | None] = mapped_column(Integer)
+    sellers_h1: Mapped[int | None] = mapped_column(Integer)
+    screen_allowed: Mapped[bool | None] = mapped_column(Boolean)
+    screen_reason: Mapped[str | None] = mapped_column(Text)
+    screen_checks: Mapped[dict[str, Any] | None]
+    created_at: Mapped[datetime] = mapped_column(server_default=func.now())
+
+
 class PaperAccount(Timestamps, Base):
     """One simulated cash account. `mode` is written as paper and the runner refuses anything else."""
     __tablename__ = "paper_accounts"
