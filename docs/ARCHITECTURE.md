@@ -101,6 +101,8 @@ All tables have `created_at`/`updated_at` (UTC, `timestamptz`). Every chain-spec
 | `strategy_performance` | Aggregated stats per strategy/period | strategy, period, trades, win_rate, profit_factor, expectancy, max_dd, fees |
 | `config` | Versioned runtime configuration | key, value jsonb, version, changed_by |
 | `system_logs` | Important structured events | level, component, event, context jsonb |
+| `discovery_leads` | Every discovery lead and its screening outcome (Phase 2) | chain, token_address, pool_address, source, reason, profile, passed, rejections, metrics |
+| `watchlist` | Pools whose history is collected (Phase 2) | pool_id, profile, status, status_since, last_snapshot_at, consecutive_misses, next_ohlcv_at |
 
 Crash recovery: on startup the position manager loads every position not in a terminal state, reconciles each against the adapter (paper ledger or chain balance), and refuses to open new trades until reconciliation is clean. `transactions.idempotency_key` prevents duplicate orders across restarts.
 
@@ -138,7 +140,33 @@ Chain differences handled inside adapters, never assumed equal: Solana uses bloc
 | 8 | Dashboard | All listed panels and controls; live mode button requires explicit multi-step confirmation |
 | 9 | Controlled live deployment | Only after your explicit go-ahead, with tiny size and all risk checks on |
 
-## 8. Repository layout
+## 8. Discovery and historical collection (Phase 2)
+
+The collector is a separate process (`python -m app.collector`, compose service `collector`). It has three loops. Each one is isolated, so an exception in one never stops the others.
+
+**Discovery (every 60s).**
+- Leads come from DexScreener latest profiles and boosts, GeckoTerminal new and trending pools per chain, and established seeds (the top pools of each chain's quote assets).
+- Each token is resolved to its deepest pool *with an exitable quote asset* (SOL/WSOL, USDC, USDT, WETH, WBNB).
+- The token is screened with the new-token profile (pool age 72h or less) or the established-token profile.
+- Every lead is stored in `discovery_leads` with its outcome and metrics, including rejected and unresolved ones. Passing pools join `watchlist`.
+
+**Snapshots.** Every watched pool is snapshotted via DexScreener's multi-pair endpoint (30 pools per request). Active pools are snapshotted every 30s, inactive every 10 min, dead every 30 min.
+
+**OHLCV.**
+- Each pool gets an initial 1m and 5m backfill (1000 candles each), then 1m refreshes: every 6h for active pools, 12–24h for inactive and dead ones.
+- Requests go through a priority gate so discovery is served first.
+- Only closed candles are stored, and the upserts are idempotent.
+
+**Lifecycle and survivorship.**
+- Watched pools move `active → inactive` (liquidity under $5k or no trades in an hour) `→ dead` (liquidity under $1k, or missing for 10 consecutive snapshots) `→ retired` (72h after going inactive or dead).
+- Dead pools keep being recorded until retirement, so rugs and fades stay in the dataset.
+- A provider outage is never counted as a missing pool.
+
+**Address validation.** Token addresses must be valid for the chain. EVM pool identifiers may be contract addresses or 32-byte pool ids (Uniswap v4 and similar singleton DEXes). Launchpad bonding-curve pseudo-pairs (for example DexScreener's `…:4meme`) are rejected because they are not routable DEX pools. The quote-asset addresses are hardcoded, and are used only after a live check confirms their on-DEX symbols.
+
+**Budget.** Keyless GeckoTerminal is the bottleneck. In a live run, 5 calls a minute still drew sustained 429s, so the default is now 3 a minute. The 429 penalty is 30s, doubling up to 120s, and a request gives up after two retries. At that rate the initial backfill of N pools takes about N×2/3 minutes. The DexScreener snapshot series (30s resolution, with buys, sells, volume and liquidity) does not depend on GeckoTerminal and is the primary historical record.
+
+## 9. Repository layout
 
 ```
 dexbot/
@@ -153,9 +181,12 @@ dexbot/
       main.py               FastAPI app (health, market data endpoints)
       domain/               chain enum, market models (pure, no I/O)
       marketdata/           http client (rate limit, cache, retry, circuit breaker),
-                            providers (dexscreener, geckoterminal), aggregator
+                            providers (dexscreener, geckoterminal), aggregator, priority gate
+      discovery/            screening profiles, discovery service, quote-asset validation
+      collector/            collector worker (python -m app.collector)
       execution/            adapter interfaces (implementations in Phase 6–7)
-      db/                   SQLAlchemy models for the schema above
+      db/                   SQLAlchemy models, repository (idempotent upserts)
+    migrations/             Alembic
     tests/
       fixtures/             real responses captured from the live APIs
       unit tests; tests marked `live` hit real APIs and are opt-in

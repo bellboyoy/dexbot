@@ -154,9 +154,10 @@ def build_market_data_service(settings: Settings) -> MarketDataService:
     gt_client = JsonHttpClient(
         "geckoterminal", settings.geckoterminal_base_url,
         limiters={"default": RateLimiter(settings.geckoterminal_rpm, 60, burst=1)},
-        # Keyless GeckoTerminal sends no Retry-After and its limit is dynamic: back off hard.
+        # Keyless GeckoTerminal sends no Retry-After and its limit is dynamic: back off hard,
+        # but give up after two retries so one request cannot hold the budget for minutes.
         rate_limit_penalty_s=30.0,
-        cache=cache, timeout_s=settings.http_timeout_s, max_retries=settings.http_max_retries,
+        cache=cache, timeout_s=settings.http_timeout_s, max_retries=min(settings.http_max_retries, 2),
         breaker=CircuitBreaker(settings.breaker_failure_threshold, settings.breaker_cooldown_s),
     )
     chains = settings.enabled_chains

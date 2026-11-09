@@ -45,6 +45,7 @@ GECKOTERMINAL_NETWORK_IDS: dict[Chain, str] = {
 }
 
 _EVM_ADDR = re.compile(r"^0x[0-9a-fA-F]{40}$")
+_EVM_POOL_ID = re.compile(r"^0x[0-9a-fA-F]{64}$")      # Uniswap v4-style 32-byte pool ids
 _B58 = re.compile(r"^[1-9A-HJ-NP-Za-km-z]{32,44}$")
 
 
@@ -77,3 +78,15 @@ def chain_from_provider_id(mapping: dict[Chain, str], provider_id: str) -> Chain
         if pid == provider_id:
             return chain
     return None
+
+
+def normalize_pool_id(chain: Chain, pool_id: str) -> str:
+    """Validate a pool identifier. On EVM chains this is either a pool contract address or,
+    for singleton-style DEXes (Uniswap v4, PancakeSwap Infinity), a 32-byte pool id.
+
+    Pseudo-pairs such as launchpad bonding curves (DexScreener ids like "0x...:4meme") are
+    rejected: they are not DEX pools and cannot be traded through normal routers.
+    """
+    if chain.family is ChainFamily.EVM and isinstance(pool_id, str) and _EVM_POOL_ID.match(pool_id.strip()):
+        return pool_id.strip().lower()
+    return normalize_address(chain, pool_id)

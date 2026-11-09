@@ -20,7 +20,8 @@ CHAIN = Enum(Chain, name="chain", values_callable=lambda e: [m.value for m in e]
 
 
 class Base(DeclarativeBase):
-    type_annotation_map = {dict[str, Any]: JSONB, datetime: DateTime(timezone=True)}
+    # none_as_null: a Python None is stored as SQL NULL (not JSON null), so IS NULL queries work.
+    type_annotation_map = {dict[str, Any]: JSONB(none_as_null=True), datetime: DateTime(timezone=True)}
 
 
 class Timestamps:
@@ -46,7 +47,7 @@ class Pool(Timestamps, Base):
     __table_args__ = (UniqueConstraint("chain", "address"),)
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
     chain: Mapped[Chain] = mapped_column(CHAIN)
-    address: Mapped[str] = mapped_column(String(64))
+    address: Mapped[str] = mapped_column(String(80))     # contract address or 32-byte pool id
     dex_id: Mapped[str | None] = mapped_column(String(64))
     base_token_id: Mapped[int] = mapped_column(ForeignKey("tokens.id"))
     quote_token_id: Mapped[int | None] = mapped_column(ForeignKey("tokens.id"))
@@ -67,6 +68,7 @@ class MarketSnapshot(Base):
     fdv_usd: Mapped[Decimal | None] = mapped_column(USD)
     market_cap_usd: Mapped[Decimal | None] = mapped_column(USD)
     windows: Mapped[dict[str, Any]]          # {"m5": {"buys":..,"buyers":..,"volume_usd":..}, ...}
+    quality_flags: Mapped[list[str] | None] = mapped_column(JSONB(none_as_null=True))    # see app/quality/checks.py
     raw: Mapped[dict[str, Any] | None]
     created_at: Mapped[datetime] = mapped_column(server_default=func.now())
 
@@ -248,3 +250,117 @@ class SystemLog(Base):
     chain: Mapped[Chain | None] = mapped_column(CHAIN)
     context: Mapped[dict[str, Any] | None]
     logged_at: Mapped[datetime] = mapped_column(server_default=func.now(), index=True)
+
+
+class DiscoveryLead(Base):
+    """Every discovery lead and its screening outcome, including rejections.
+
+    Kept so later analysis sees the full population of tokens that were visible at the
+    time, not just the survivors (survivorship bias).
+    """
+    __tablename__ = "discovery_leads"
+    __table_args__ = (Index("ix_leads_chain_token", "chain", "token_address"),)
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    chain: Mapped[Chain] = mapped_column(CHAIN)
+    token_address: Mapped[str] = mapped_column(String(64))
+    pool_address: Mapped[str | None] = mapped_column(String(80))
+    pool_id: Mapped[int | None] = mapped_column(ForeignKey("pools.id"))
+    source: Mapped[str] = mapped_column(String(32))
+    reason: Mapped[str] = mapped_column(String(64))
+    pipeline: Mapped[str | None] = mapped_column(String(16))         # new / established / momentum
+    profile: Mapped[str | None] = mapped_column(String(16))          # new / established
+    passed: Mapped[bool | None] = mapped_column(Boolean)              # None = could not be resolved
+    rejections: Mapped[dict[str, Any] | None]
+    metrics: Mapped[dict[str, Any] | None]
+    discovered_at: Mapped[datetime] = mapped_column(index=True)
+
+
+class WatchedPool(Timestamps, Base):
+    """Pools the collector records history for. Status moves active -> inactive/dead -> retired;
+    dead pools keep being recorded for a while so their failure is in the data."""
+    __tablename__ = "watchlist"
+    __table_args__ = (Index("ix_watchlist_status", "status"),)
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    pool_id: Mapped[int] = mapped_column(ForeignKey("pools.id"), unique=True)
+    chain: Mapped[Chain] = mapped_column(CHAIN)
+    base_token_address: Mapped[str] = mapped_column(String(64))
+    profile: Mapped[str] = mapped_column(String(16))
+    pipeline: Mapped[str] = mapped_column(String(16), server_default="new")  # discovery pipeline that added it
+    status: Mapped[str] = mapped_column(String(16))                   # active / inactive / dead / retired
+    discovered_via: Mapped[str] = mapped_column(String(64))
+    added_at: Mapped[datetime]
+    status_since: Mapped[datetime]
+    last_snapshot_at: Mapped[datetime | None]
+    consecutive_misses: Mapped[int] = mapped_column(Integer, default=0)
+    next_ohlcv_at: Mapped[datetime | None]
+    ohlcv_backfilled: Mapped[bool] = mapped_column(Boolean, default=False)
+    buyers_checked_at: Mapped[datetime | None]
+
+
+class PoolMetrics(Base):
+    """Derived market metrics per pool per collection cycle.
+
+    Every value is None when its inputs are missing (never zero). `reliable` is False when
+    any input observation carried a quality flag; consumers must not act on unreliable rows.
+    """
+    __tablename__ = "pool_metrics"
+    __table_args__ = (Index("ix_pool_metrics_pool_time", "pool_id", "observed_at"),)
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    pool_id: Mapped[int] = mapped_column(ForeignKey("pools.id"))
+    chain: Mapped[Chain] = mapped_column(CHAIN)
+    observed_at: Mapped[datetime]                     # time of the snapshot the metrics derive from
+    source: Mapped[str] = mapped_column(String(32))   # primary snapshot source
+    price_usd: Mapped[Decimal | None] = mapped_column(USD)
+    liquidity_usd: Mapped[Decimal | None] = mapped_column(USD)
+    volume_m5_usd: Mapped[Decimal | None] = mapped_column(USD)
+    volume_h1_usd: Mapped[Decimal | None] = mapped_column(USD)
+    volume_accel_m5: Mapped[Decimal | None] = mapped_column(Numeric(20, 6))   # m5 volume vs h1 average 5m
+    volume_accel_h1: Mapped[Decimal | None] = mapped_column(Numeric(20, 6))   # h1 volume vs h24 average hour
+    buy_ratio_m5: Mapped[Decimal | None] = mapped_column(Numeric(10, 6))      # buys / (buys + sells)
+    buy_ratio_h1: Mapped[Decimal | None] = mapped_column(Numeric(10, 6))
+    buyers_h1: Mapped[int | None] = mapped_column(Integer)                    # unique buyers (GeckoTerminal)
+    sellers_h1: Mapped[int | None] = mapped_column(Integer)
+    buyers_observed_at: Mapped[datetime | None]
+    liquidity_change_5m_pct: Mapped[Decimal | None] = mapped_column(Numeric(20, 6))
+    liquidity_change_1h_pct: Mapped[Decimal | None] = mapped_column(Numeric(20, 6))
+    price_change_m5_pct: Mapped[Decimal | None] = mapped_column(Numeric(20, 6))
+    price_change_h1_pct: Mapped[Decimal | None] = mapped_column(Numeric(20, 6))
+    reliable: Mapped[bool] = mapped_column(Boolean)
+    quality_flags: Mapped[list[str] | None] = mapped_column(JSONB(none_as_null=True))
+    created_at: Mapped[datetime] = mapped_column(server_default=func.now())
+
+
+class DataQualityEvent(Base):
+    __tablename__ = "data_quality_events"
+    __table_args__ = (Index("ix_dq_chain_check_time", "chain", "check", "observed_at"),)
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    chain: Mapped[Chain] = mapped_column(CHAIN)
+    pool_id: Mapped[int | None] = mapped_column(ForeignKey("pools.id"))
+    source: Mapped[str] = mapped_column(String(32))
+    check: Mapped[str] = mapped_column(String(48))
+    severity: Mapped[str] = mapped_column(String(8))         # info / warn / error
+    observed_at: Mapped[datetime]
+    details: Mapped[dict[str, Any] | None]
+    created_at: Mapped[datetime] = mapped_column(server_default=func.now())
+
+
+class MomentumEvent(Base):
+    """Unusual momentum detected by the momentum pipeline (input for Phase 3, not a trade signal)."""
+    __tablename__ = "momentum_events"
+    __table_args__ = (Index("ix_momentum_chain_time", "chain", "detected_at"),)
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    chain: Mapped[Chain] = mapped_column(CHAIN)
+    pool_id: Mapped[int] = mapped_column(ForeignKey("pools.id"))
+    profile: Mapped[str] = mapped_column(String(16))
+    detected_at: Mapped[datetime]
+    metrics_id: Mapped[int | None] = mapped_column(ForeignKey("pool_metrics.id"))
+    triggers: Mapped[list[str]] = mapped_column(JSONB)
+    details: Mapped[dict[str, Any] | None]
+
+
+class CollectorState(Base):
+    """Small key/value store so the collector resumes schedules after a restart."""
+    __tablename__ = "collector_state"
+    key: Mapped[str] = mapped_column(String(128), primary_key=True)
+    value: Mapped[dict[str, Any]]
+    updated_at: Mapped[datetime] = mapped_column(server_default=func.now(), onupdate=func.now())

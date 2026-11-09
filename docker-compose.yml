@@ -42,5 +42,19 @@ services:
     ports: ["127.0.0.1:8000:8000"]
     restart: unless-stopped
 
+  # Discovery + historical data collection (paper-only; no trading, no wallets).
+  collector:
+    build: ./backend
+    env_file: .env
+    environment:
+      DEXBOT_DATABASE_URL: postgresql+asyncpg://dexbot:${POSTGRES_PASSWORD:-dexbot}@postgres:5432/dexbot
+      DEXBOT_REDIS_URL: redis://redis:6379/0
+    command: ["python", "-m", "app.collector"]
+    depends_on:
+      migrate: {condition: service_completed_successfully}
+    restart: unless-stopped
+    healthcheck:
+      disable: true
+
 volumes:
   pgdata:

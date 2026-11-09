@@ -24,7 +24,16 @@ curl "localhost:8000/market/solana/pools/<pool-address>/ohlcv?timeframe=5m&limit
 curl localhost:8000/market/solana/new-pools
 ```
 
-The `migrate` service runs `alembic upgrade head` against a fresh database and exits, then `backend` starts. All ports bind to 127.0.0.1 only.
+The `migrate` service runs `alembic upgrade head` against a fresh database and exits, then `backend` and `collector` start. All ports bind to 127.0.0.1 only.
+
+The `collector` service discovers tokens on every enabled chain, screens them, and records history for the pools it watches: DexScreener snapshots every 30 seconds and 1-minute candles from GeckoTerminal. Check what it has recorded with:
+
+```bash
+curl localhost:8000/collector/status
+docker compose logs -f collector
+```
+
+To run it outside Docker: `cd backend && DEXBOT_DATABASE_URL=... .venv/bin/python -m app.collector`.
 
 If you build behind a TLS-intercepting proxy, pass its CA certificate as a build secret:
 `docker build --secret id=extra_ca,src=/path/to/ca.pem -t dexbot-backend backend`.
