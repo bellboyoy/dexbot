@@ -18,7 +18,8 @@ from decimal import Decimal
 
 from app.domain.chains import Chain
 from app.logging import get_logger
-from app.marketdata.errors import InvalidResponse, ProviderError, ProviderUnavailable
+from app.domain.chains import is_extended_pool_id
+from app.marketdata.errors import InvalidResponse, ProviderError, ProviderUnavailable, UnsupportedPoolId
 from app.marketdata.http import CircuitBreaker, JsonHttpClient, RateLimiter
 from app.screening.filters import ScreenThresholds
 from app.screening.models import Check, CheckStatus
@@ -308,6 +309,8 @@ class TokenSecurityClients:
         return data if isinstance(data, dict) else None
 
     async def goplus_evm(self, chain: Chain, address: str) -> dict | None:
+        if is_extended_pool_id(address):
+            raise UnsupportedPoolId("goplus", "unsupported_pool_id")
         chain_id = _GOPLUS_CHAIN.get(chain)
         if chain_id is None:
             raise ProviderUnavailable("goplus", f"no GoPlus chain id for {chain}")
@@ -360,6 +363,9 @@ async def security_checks(clients: TokenSecurityClients, chain: Chain, address: 
 
     try:
         payload = await clients.goplus_evm(chain, address.lower())
+    except UnsupportedPoolId:
+        return [Check("unsupported_pool_id", CheckStatus.UNKNOWN, True,
+                      "GoPlus screens 20-byte token contracts, not 32-byte pool ids")]
     except ProviderError as exc:
         log.warning("goplus_unavailable", error=str(exc))
         return [Check("provider_unavailable", CheckStatus.UNKNOWN, True, "GoPlus unavailable")]

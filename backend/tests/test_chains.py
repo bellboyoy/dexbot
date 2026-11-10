@@ -1,6 +1,9 @@
 import pytest
 
-from app.domain.chains import Chain, ChainFamily, InvalidAddress, normalize_address
+from app.domain.chains import (
+    Chain, ChainFamily, InvalidAddress, is_extended_pool_id, normalize_address, normalize_pool_id,
+    provider_supports_pool_id,
+)
 
 
 def test_families():
@@ -29,3 +32,20 @@ def test_solana_address_case_preserved():
 def test_solana_address_rejected(bad):
     with pytest.raises(InvalidAddress):
         normalize_address(Chain.SOLANA, bad)
+
+
+def test_32_byte_pool_id_is_a_pool_id_not_a_token():
+    pool_id = "0x" + "AB" * 32
+    token = "0x" + "cd" * 20
+    assert is_extended_pool_id(pool_id)
+    assert normalize_pool_id(Chain.BASE, pool_id) == pool_id.lower()
+    assert len(normalize_pool_id(Chain.BSC, pool_id)) == 66
+    assert normalize_pool_id(Chain.BASE, token) == token
+    with pytest.raises(InvalidAddress, match="token address"):
+        normalize_address(Chain.BASE, pool_id)
+    with pytest.raises(InvalidAddress, match="pool id"):
+        normalize_pool_id(Chain.BASE, "0x" + "ab" * 20 + "ff")
+    assert provider_supports_pool_id("goplus", pool_id.lower()) is False
+    assert provider_supports_pool_id("dexscreener", pool_id.lower()) is True
+    assert provider_supports_pool_id("geckoterminal", pool_id.lower()) is True
+    assert provider_supports_pool_id("goplus", token) is True

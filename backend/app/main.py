@@ -1,6 +1,7 @@
 """FastAPI entrypoint. Phase 1 exposes health and read-only market data endpoints."""
 from __future__ import annotations
 
+import asyncio
 from contextlib import asynccontextmanager
 from dataclasses import asdict
 
@@ -15,6 +16,7 @@ from app.logging import configure_logging, get_logger
 from app.marketdata.aggregator import MarketDataService, build_market_data_service
 from app.marketdata.errors import ProviderUnavailable
 from app.paper.repository import build_summary, session_scope
+from app.runtime.heartbeat import read_heartbeats
 from app.strategy.validation import load_validation
 
 log = get_logger(__name__)
@@ -42,12 +44,27 @@ def _serialize(obj):
     return d
 
 
+async def _heartbeats() -> list[dict] | None:
+    settings = get_settings()
+
+    async def _read() -> list[dict]:
+        async with session_scope(settings.database_url) as session:
+            return await read_heartbeats(session)
+
+    try:
+        return await asyncio.wait_for(_read(), timeout=5)
+    except Exception:
+        log.warning("heartbeat_unavailable")
+        return None
+
+
 @app.get("/health")
 async def health():
     s = get_settings()
     return {
         "status": "ok", "mode": s.trading_mode, "paper_only": True, "execution": "disabled",
         "chains": s.enabled_chains, "providers": _market().health(),
+        "heartbeats": await _heartbeats(),
     }
 
 
@@ -93,6 +110,7 @@ async def _paper_ledger() -> dict:
             data = await build_summary(
                 session, gas_reserve=settings.risk_gas_reserve_usd, known_strategies=known,
             )
+            data["heartbeats"] = await read_heartbeats(session)
     except Exception as exc:
         log.warning("paper_summary_unavailable", error=type(exc).__name__)
         raise HTTPException(503, "paper ledger database unavailable") from exc

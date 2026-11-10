@@ -7,7 +7,9 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+from datetime import datetime, timezone
 
+from app.collector.schedule import clock_jumped, fatal_stall
 from app.collector.service import CollectorState, run_cycle
 from app.config import TradingMode, get_settings
 from app.domain.chains import Chain
@@ -16,6 +18,7 @@ from app.marketdata.dexscreener import DexScreenerProvider
 from app.marketdata.geckoterminal import GeckoTerminalProvider
 from app.marketdata.http import CircuitBreaker, JsonHttpClient, MemoryTTLCache, RateLimiter
 from app.paper.repository import session_scope
+from app.runtime.heartbeat import write_heartbeat
 from app.screening.engine import ScreeningEngine
 from app.screening.filters import thresholds_from_settings
 from app.screening.providers import build_security_clients
@@ -50,11 +53,13 @@ async def _once(state: CollectorState) -> CollectorState:
     security = build_security_clients()
     screening = ScreeningEngine(security, thresholds_from_settings(settings))
     try:
-        await _cycle(ds, gt, screening, state)
+        await _guarded_cycle(ds, gt, screening, state)
     finally:
         await screening.aclose()
         await ds.aclose()
         await gt.aclose()
+    if state.stalls:
+        raise SystemExit(1)
     return state
 
 
@@ -64,7 +69,30 @@ async def _cycle(ds, gt, screening, state: CollectorState) -> None:
         async with session.begin():
             await run_cycle(session, ds, gt, screening, settings, state)
     log.info("collector_cycle", enrolled=state.enrolled, observed=state.observed, missed=state.missed,
-             screens=state.screens, gt_calls=state.gt_calls)
+             screens=state.screens, gt_calls=state.gt_calls, skipped_unsupported=state.skipped_unsupported,
+             clock_jumped=state.clock_jumped)
+
+
+async def _guarded_cycle(ds, gt, screening, state: CollectorState) -> None:
+    """One cycle with a deadline. Two deadline misses in a row exit non-zero."""
+    settings = get_settings()
+    now = datetime.now(timezone.utc)
+    state.clock_jumped = clock_jumped(state.last_wall, now, settings.collector_jump_s)
+    if state.clock_jumped and state.last_wall is not None:
+        gap = (now - state.last_wall).total_seconds()
+        log.warning("wall_clock_jump", gap_s=round(gap))
+    state.last_wall = now
+    try:
+        await asyncio.wait_for(_cycle(ds, gt, screening, state), timeout=settings.cycle_deadline_s)
+    except TimeoutError:
+        state.stalls += 1
+        log.error("collector_stall", consecutive=state.stalls, deadline_s=settings.cycle_deadline_s)
+        await write_heartbeat("collector", success=False, error="cycle deadline")
+        if fatal_stall(state.stalls, settings.collector_stall_limit):
+            raise SystemExit(1)
+        return
+    state.stalls = 0
+    await write_heartbeat("collector", success=True)
 
 
 async def _loop() -> None:
@@ -78,9 +106,12 @@ async def _loop() -> None:
     try:
         while True:
             try:
-                await _cycle(ds, gt, screening, state)
+                await _guarded_cycle(ds, gt, screening, state)
+            except SystemExit:
+                raise
             except Exception as exc:
                 log.error("collector_cycle_failed", error=type(exc).__name__)
+                await write_heartbeat("collector", success=False, error=type(exc).__name__)
             await asyncio.sleep(settings.collector_poll_s)
     finally:
         await screening.aclose()

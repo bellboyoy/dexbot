@@ -15,13 +15,14 @@ from typing import Any
 
 from app.domain.chains import (
     DEXSCREENER_CHAIN_IDS, Chain, InvalidAddress, chain_from_provider_id, normalize_address,
+    normalize_pool_id,
 )
 from app.domain.market import (
     Candle, DataSource, DiscoveredToken, PoolSnapshot, PoolTrade, Timeframe, TokenRef, WindowStats,
 )
 from app.logging import get_logger
 from app.marketdata.base import Capability
-from app.marketdata.errors import CapabilityNotSupported, InvalidResponse
+from app.marketdata.errors import CapabilityNotSupported, InvalidResponse, UnsupportedPoolId
 from app.marketdata.http import JsonHttpClient, ProviderStatus
 from app.marketdata.parsing import dec, int_or_none, ts_ms, utcnow
 
@@ -56,7 +57,7 @@ class DexScreenerProvider:
         if chain is None or chain not in self.enabled_chains:
             return None
         try:
-            pool_addr = normalize_address(chain, p["pairAddress"])
+            pool_addr = normalize_pool_id(chain, p["pairAddress"])
             base = p["baseToken"]
             base_ref = TokenRef(chain, normalize_address(chain, base["address"]), base.get("symbol"), base.get("name"))
             q = p.get("quoteToken") or {}
@@ -94,9 +95,16 @@ class DexScreenerProvider:
 
     # --- queries -------------------------------------------------------------
     async def get_pool(self, chain: Chain, pool_address: str) -> PoolSnapshot | None:
-        addr = normalize_address(chain, pool_address)
-        data = await self.client.get_json(
-            f"/latest/dex/pairs/{DEXSCREENER_CHAIN_IDS[chain]}/{addr}", cache_ttl_s=10, allow_404=True)
+        addr = normalize_pool_id(chain, pool_address)
+        try:
+            data = await self.client.get_json(
+                f"/latest/dex/pairs/{DEXSCREENER_CHAIN_IDS[chain]}/{addr}", cache_ttl_s=10, allow_404=True)
+        except InvalidResponse as exc:
+            if "HTTP 400" in str(exc):
+                from app.domain.chains import is_extended_pool_id
+                if is_extended_pool_id(addr):
+                    raise UnsupportedPoolId(self.name, "unsupported_pool_id") from exc
+            raise
         if not data:
             return None
         pools = self._parse_pairs(data.get("pairs"))

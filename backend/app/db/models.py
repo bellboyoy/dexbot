@@ -47,7 +47,7 @@ class Pool(Timestamps, Base):
     __table_args__ = (UniqueConstraint("chain", "address"),)
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
     chain: Mapped[Chain] = mapped_column(CHAIN)
-    address: Mapped[str] = mapped_column(String(64))
+    address: Mapped[str] = mapped_column(String(80))
     dex_id: Mapped[str | None] = mapped_column(String(64))
     base_token_id: Mapped[int] = mapped_column(ForeignKey("tokens.id"))
     quote_token_id: Mapped[int | None] = mapped_column(ForeignKey("tokens.id"))
@@ -208,7 +208,7 @@ class LaunchWatch(Timestamps, Base):
     )
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
     chain: Mapped[Chain] = mapped_column(CHAIN)
-    pool_address: Mapped[str] = mapped_column(String(64))
+    pool_address: Mapped[str] = mapped_column(String(80))
     token_address: Mapped[str] = mapped_column(String(64))
     quote_address: Mapped[str | None] = mapped_column(String(64))
     symbol: Mapped[str | None] = mapped_column(String(64))
@@ -259,6 +259,17 @@ class LaunchSnapshot(Base):
     screen_reason: Mapped[str | None] = mapped_column(Text)
     screen_checks: Mapped[dict[str, Any] | None]
     created_at: Mapped[datetime] = mapped_column(server_default=func.now())
+
+
+class ProcessHeartbeat(Base):
+    """Last successful cycle of a long-running paper process. No secrets."""
+    __tablename__ = "process_heartbeats"
+    component: Mapped[str] = mapped_column(String(32), primary_key=True)
+    last_success_at: Mapped[datetime | None]
+    last_attempt_at: Mapped[datetime | None]
+    last_error: Mapped[str | None] = mapped_column(Text)
+    consecutive_failures: Mapped[int] = mapped_column(Integer)
+    updated_at: Mapped[datetime] = mapped_column(server_default=func.now())
 
 
 class PaperAccount(Timestamps, Base):

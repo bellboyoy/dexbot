@@ -87,10 +87,13 @@ def _print_inventory(stats: Inventory, reason: str) -> None:
     per_day = daily_megabytes(150)
     print("point-in-time inventory")
     print(f"  watches: {stats.watches}")
-    print(f"  snapshots: {stats.snapshots} ({stats.real_snapshots} observed, the rest missed slots)")
+    coverage = "n/a" if stats.observed_coverage is None else f"{stats.observed_coverage:.0%}"
+    print(f"  snapshots: {stats.snapshots} ({stats.real_snapshots} with a price or not-found, "
+          f"{stats.unsupported_slots} unsupported pool ids, the rest missed)")
+    print(f"  observed coverage: {coverage} ({stats.observed_slots} of {stats.elapsed_slots} elapsed slots)")
     print(f"  oldest: {stats.oldest.isoformat() if stats.oldest else 'none'}")
     print(f"  days covered: {stats.days:.2f}")
-    print(f"  pools with at least 8 observed snapshots: {stats.pools_with_history}")
+    print(f"  usable pools (8 observed slots and at least half of elapsed slots): {stats.pools_with_history}")
     print(f"  scheduled snapshots per pool: {len(snapshot_ages())}")
     print(f"  not ready: {reason}")
     print(f"  at the default cap of 150 new pools/day the table is about {per_day:.1f} MB/day plus indexes")

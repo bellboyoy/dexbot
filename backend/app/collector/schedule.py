@@ -63,6 +63,33 @@ def daily_megabytes(new_pools_per_day: int) -> float:
     return daily_snapshot_rows(new_pools_per_day) * BYTES_PER_SNAPSHOT / 1_000_000
 
 
+def clock_jumped(previous: datetime | None, now: datetime, jump_s: float) -> bool:
+    """True when wall time leapt forward, which is what a host suspend looks like."""
+    if previous is None:
+        return False
+    return (now - previous).total_seconds() >= jump_s
+
+
+def catch_up_limit(jumped: bool, normal: int, catch_up: int = 50) -> int:
+    """After a gap, close more overdue watches in one cycle. The extra rows are missed slots."""
+    return catch_up if jumped else normal
+
+
+def fatal_stall(consecutive: int, limit: int) -> bool:
+    """A cycle that keeps hitting its deadline should exit so a watchdog can restart it."""
+    return consecutive >= max(1, limit)
+
+
+def is_usable(observed: int, elapsed: int, *, min_observed: int = 8, min_coverage: float = 0.5) -> bool:
+    """A pool counts toward the research gate only when enough elapsed slots were actually seen.
+
+    Missed slots and unsupported pool ids are not observations. Coverage is observed / elapsed.
+    """
+    if elapsed < min_observed or observed < min_observed or elapsed <= 0:
+        return False
+    return (observed / elapsed) >= min_coverage
+
+
 def asof_liquidity(points: list[tuple[datetime, object]], at: datetime):
     """Last known liquidity at or before `at`. Later snapshots are invisible."""
     chosen = None

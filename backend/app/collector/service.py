@@ -13,14 +13,15 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from decimal import Decimal
 
-from app.collector.schedule import BUYER_AGES, SCREEN_AGES, classify, partition
+from app.collector.schedule import BUYER_AGES, SCREEN_AGES, catch_up_limit, classify, partition
 from app.collector.store import (
     Candidate, add_missed, add_observation, advance, due_watches, enroll, taken_ages,
 )
 from app.config import Settings
 from app.domain.chains import Chain
 from app.domain.market import PoolSnapshot
-from app.marketdata.errors import ProviderError
+from app.logging import get_logger
+from app.marketdata.errors import ProviderError, UnsupportedPoolId
 from app.marketdata.parsing import dec
 from app.screening.engine import ScreeningEngine
 from app.screening.filters import is_stable, quote_allowed
@@ -28,6 +29,7 @@ from app.screening.models import ScreenDecision
 
 WATCH_CHAINS = (Chain.SOLANA, Chain.BASE)
 MAX_ENROLL_AGE = timedelta(minutes=30)
+log = get_logger(__name__)
 
 
 @dataclass
@@ -39,6 +41,10 @@ class CollectorState:
     observed: int = 0
     missed: int = 0
     screens: int = 0
+    skipped_unsupported: int = 0
+    clock_jumped: bool = False
+    last_wall: datetime | None = None
+    stalls: int = 0
 
 
 def snapshot_fields(snap: PoolSnapshot, buyers: PoolSnapshot | None = None) -> dict:
@@ -154,7 +160,9 @@ async def discover(session, ds, gt, *, now: datetime, settings: Settings, state:
 
 async def observe(session: AsyncSession, ds, gt, screening: ScreeningEngine | None, *, now: datetime,
                   settings: Settings, state: CollectorState) -> None:
-    watches = await due_watches(session, now, settings.collector_snapshots_per_cycle)
+    watches = await due_watches(
+        session, now, catch_up_limit(state.clock_jumped, settings.collector_snapshots_per_cycle),
+    )
     for watch in watches:
         done = await taken_ages(session, watch.id)
         missed, age = partition(watch.launch_at, now, done)
@@ -166,6 +174,16 @@ async def observe(session: AsyncSession, ds, gt, screening: ScreeningEngine | No
             continue
         try:
             snap = await ds.get_pool(watch.chain, watch.pool_address)
+        except UnsupportedPoolId:
+            state.skipped_unsupported += 1
+            log.info("skip_pool", reason="unsupported_pool_id", chain=watch.chain.value, pool=watch.pool_address)
+            await add_observation(
+                session, watch, age=age, now=now, source="unsupported_pool_id", not_found=False, fields={}, screen=None,
+            )
+            watch.last_error = "unsupported_pool_id"
+            await session.flush()
+            await advance(session, watch, now)
+            continue
         except ProviderError as exc:
             watch.last_error = str(exc)[:300]
             continue
@@ -176,6 +194,10 @@ async def observe(session: AsyncSession, ds, gt, screening: ScreeningEngine | No
                 buyers = await gt.get_pool(watch.chain, watch.pool_address)
                 state.last_gt_at = now
                 state.gt_calls += 1
+            except UnsupportedPoolId:
+                state.skipped_unsupported += 1
+                log.info("skip_pool", reason="unsupported_pool_id", chain=watch.chain.value, pool=watch.pool_address)
+                buyers = None
             except ProviderError:
                 buyers = None
         screen = None
@@ -185,6 +207,8 @@ async def observe(session: AsyncSession, ds, gt, screening: ScreeningEngine | No
                 decision = await screening.screen(snap, now=now, with_security=True)
                 screen = screen_document(decision)
                 state.screens += 1
+                if any(check.get("name") == "unsupported_pool_id" for check in screen["checks"]):
+                    state.skipped_unsupported += 1
             except Exception:
                 screen = None
         if snap is None:

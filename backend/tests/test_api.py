@@ -25,6 +25,8 @@ def client(monkeypatch):
 def test_health_is_paper_and_leaks_nothing(client):
     r = client.get("/health")
     assert r.status_code == 200 and r.json()["mode"] == "paper"
+    beats = r.json()["heartbeats"]
+    assert beats is None or isinstance(beats, list)
     body = r.text + client.get("/openapi.json").text
     for v in SECRETS.values():
         assert v not in body

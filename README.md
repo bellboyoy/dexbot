@@ -88,7 +88,7 @@ export DEXBOT_REDIS_URL=redis://127.0.0.1:6379/0
 .venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 8000
 ```
 
-`GET /health` should report `"mode": "paper"` and `"execution": "disabled"`.
+`GET /health` should report `"mode": "paper"` and `"execution": "disabled"`. It also includes `heartbeats`, the last successful paper-runner and collector cycle, or `null` when the database cannot be reached. `/api/paper/summary` includes the same list.
 
 ## Backtest
 
@@ -156,7 +156,7 @@ The page is labelled PAPER. Simulated balance is mark-to-market equity. Realised
 
 ## Launch collector
 
-Records new Solana and Base pools as they appear, including ones that later die, and snapshots them at 1, 5, 15, 30, 60 and 240 minutes, then hourly through 24 hours. DexScreener does the bulk reads. GeckoTerminal is limited to one call every 3 minutes. At the default cap of 150 new pools per day that is about 10 MB/day including indexes. See [docs/RUNNING.md](docs/RUNNING.md).
+Records new Solana and Base pools as they appear, including ones that later die, and snapshots them at 1, 5, 15, 30, 60 and 240 minutes, then hourly through 24 hours. DexScreener does the bulk reads. GeckoTerminal is limited to one call every 3 minutes. At the default cap of 150 new pools per day that is about 10 MB/day including indexes. 32-byte pool ids are kept. A slot skipped by a provider is counted as `unsupported_pool_id`. After a suspend, overdue slots are stored as missed, not filled in. Two cycle deadlines in a row exit 1. See [docs/RUNNING.md](docs/RUNNING.md).
 
 ```bash
 cd backend

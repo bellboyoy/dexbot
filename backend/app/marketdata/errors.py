@@ -20,3 +20,9 @@ class InvalidResponse(ProviderError):
 
 class CapabilityNotSupported(ProviderError):
     """The provider does not offer this kind of data."""
+
+
+class UnsupportedPoolId(ProviderError):
+    """The provider cannot query this pool id. Counted separately from an invalid address."""
+
+    reason = "unsupported_pool_id"

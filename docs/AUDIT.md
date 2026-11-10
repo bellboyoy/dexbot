@@ -17,7 +17,7 @@ Scope: the Phase 1 market-data layer on `phase-1-market-data`, plus the paper-tr
 - **OHLCV volume is USD for this client.** A captured SOL/USDC 5-minute candle (~$285k) lines up with the pool's `volume_usd.m5` (~$278k). The client always requests `currency=usd`.
 - **No historical liquidity.** Slippage in the backtest uses today's reserve for every past bar. That mis-states impact for pools whose liquidity changed. It is called out on the backtest report.
 - **EIP-55 checksums are still not verified.** Unchanged from Phase 1. EVM addresses are lowercased.
-- **Some Base and BSC pool ids are 32 bytes.** During the backtest, GeckoTerminal trending returned ids such as `0xc19d…627fa` (64 hex chars). `normalize_address` only accepts 20-byte EVM addresses, so those pools (likely Uniswap v4) are dropped. The run still found three 20-byte pools on each chain. Token addresses are not loosened to match, because an ERC-20 address is 20 bytes.
+- **Some Base and BSC pool ids are 32 bytes.** During the backtest, GeckoTerminal trending returned ids such as `0xc19d…627fa` (64 hex chars). At that time `normalize_address` only accepted 20-byte EVM addresses, so those pools (likely Uniswap v4) were dropped. Pool identifiers now accept a 20-byte address or a 32-byte id. Token addresses stay 20 bytes. A provider that cannot query a 32-byte id is counted as `unsupported_pool_id`.
 
 ## Security
 

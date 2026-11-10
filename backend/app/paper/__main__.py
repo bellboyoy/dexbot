@@ -27,7 +27,13 @@ def main(argv: list[str] | None = None) -> None:
     balance = Decimal(args.balance) if args.balance is not None else None
     print("DexBot paper runner. Simulated balance only. Live execution is not implemented.")
     if args.once:
-        asyncio.run(run_once(balance=balance))
+        async def _bounded() -> None:
+            await asyncio.wait_for(run_once(balance=balance), timeout=settings.cycle_deadline_s)
+
+        try:
+            asyncio.run(_bounded())
+        except TimeoutError:
+            raise SystemExit(1) from None
         return
     interval = args.interval if args.interval is not None else settings.paper_scan_interval_s
     try:

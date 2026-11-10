@@ -18,7 +18,7 @@ from decimal import Decimal
 
 from app.config import get_settings
 from app.costs import fee_rate_for_snapshot
-from app.domain.chains import Chain, normalize_address
+from app.domain.chains import Chain, normalize_pool_id
 from app.domain.market import DataSource, PoolSnapshot, Timeframe, TokenRef
 from app.marketdata.errors import ProviderError
 from app.marketdata.geckoterminal import GeckoTerminalProvider
@@ -71,7 +71,7 @@ def parse_listed(payload: dict, chain: Chain, source: str) -> list[Listed]:
         name = str(attrs.get("name") or "")
         raw_addr = str(attrs.get("address") or "")
         try:
-            address = normalize_address(chain, raw_addr)
+            address = normalize_pool_id(chain, raw_addr)
         except Exception:
             continue
         liq_raw = attrs.get("reserve_in_usd")
@@ -267,7 +267,7 @@ async def _benchmarks(provider: GeckoTerminalProvider, client: JsonHttpClient) -
             if not name.upper().startswith(symbol + " /"):
                 continue
             try:
-                address = normalize_address(chain, str(attrs.get("address") or ""))
+                address = normalize_pool_id(chain, str(attrs.get("address") or ""))
             except Exception:
                 continue
             try:

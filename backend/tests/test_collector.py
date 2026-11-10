@@ -6,7 +6,8 @@ from decimal import Decimal
 import pytest
 
 from app.collector.schedule import (
-    asof_liquidity, classify, daily_megabytes, daily_snapshot_rows, partition, snapshot_ages,
+    asof_liquidity, catch_up_limit, classify, clock_jumped, daily_megabytes, daily_snapshot_rows,
+    fatal_stall, is_usable, partition, snapshot_ages,
 )
 from app.collector.store import Candidate, Inventory, enroll, inventory, ready
 from app.domain.chains import Chain
@@ -75,6 +76,29 @@ def test_clip_drops_bars_before_the_first_snapshot():
     assert clip_candles(candles[:10], points) is None
 
 
+def test_suspend_gap_marks_overdue_slots_missed_and_leaves_the_current_one_due():
+    launch = NOW
+    later = NOW + timedelta(hours=6)
+    assert clock_jumped(NOW, later, 120) is True
+    assert clock_jumped(None, later, 120) is False
+    missed, nxt = partition(launch, later)
+    assert missed == [1, 5, 15, 30, 60, 240, 300]
+    assert nxt == 360
+    assert classify(launch, 360, later) == "due"
+    assert catch_up_limit(True, 4) == 50
+    assert catch_up_limit(False, 4) == 4
+    assert fatal_stall(2, 2) is True
+    assert fatal_stall(1, 2) is False
+
+
+def test_usable_pool_needs_observed_coverage_not_filled_gaps():
+    assert is_usable(8, 8) is True
+    assert is_usable(8, 16) is True
+    assert is_usable(7, 8) is False
+    assert is_usable(8, 17) is False  # under half of the elapsed slots
+    assert is_usable(8, 4) is False
+
+
 def test_ready_requires_two_weeks_and_enough_pools():
     fresh = Inventory(3, 10, 10, NOW, 1)
     assert ready(fresh)[0] is False
@@ -100,6 +124,29 @@ async def session():
     await engine.dispose()
 
 
+async def test_collector_exits_nonzero_after_repeated_stalls(monkeypatch):
+    import asyncio
+    from app.collector.__main__ import _guarded_cycle
+    from app.collector.service import CollectorState
+    from app.config import get_settings
+
+    monkeypatch.setenv("DEXBOT_CYCLE_DEADLINE_S", "0.05")
+    monkeypatch.setenv("DEXBOT_COLLECTOR_STALL_LIMIT", "2")
+    get_settings.cache_clear()
+
+    async def hang(*args, **kwargs):
+        await asyncio.sleep(5)
+
+    monkeypatch.setattr("app.collector.__main__._cycle", hang)
+    state = CollectorState()
+    await _guarded_cycle(None, None, None, state)
+    assert state.stalls == 1
+    with pytest.raises(SystemExit) as caught:
+        await _guarded_cycle(None, None, None, state)
+    assert caught.value.code == 1
+    get_settings.cache_clear()
+
+
 @pytest.mark.postgres
 async def test_enroll_records_missed_slots_without_inventing_prices(session):
     candidate = Candidate(
@@ -117,3 +164,61 @@ async def test_enroll_records_missed_slots_without_inventing_prices(session):
     again = await enroll(session, candidate, now=NOW + timedelta(minutes=10), max_active=10, max_per_day=10,
                          max_age=timedelta(minutes=30))
     assert again is False
+
+
+@pytest.mark.postgres
+async def test_extended_pool_id_and_coverage_ignore_gaps(session):
+    from decimal import Decimal as D
+    from app.collector.store import add_observation
+    from app.db.models import LaunchSnapshot, LaunchWatch
+    from sqlalchemy import select
+
+    now = datetime.now(timezone.utc).replace(microsecond=0)
+    launch = now - timedelta(minutes=361)
+    pool_id = "0x" + "ab" * 32
+    token = "0x" + "cd" * 20
+    quote = "0x" + "11" * 20
+    created = await enroll(session, Candidate(
+        chain=Chain.BASE, pool_address=pool_id, token_address=token, quote_address=quote,
+        symbol="V4", dex_id="uniswap-v4", pool_created_at=launch,
+    ), now=launch + timedelta(seconds=20), max_active=10, max_per_day=10, max_age=timedelta(minutes=30))
+    assert created is True
+    watch = await session.scalar(select(LaunchWatch).where(LaunchWatch.pool_address == pool_id))
+    assert watch is not None and len(watch.pool_address) == 66
+    for age in (1, 5, 15, 30, 60, 240, 300, 360):
+        await add_observation(
+            session, watch, age=age, now=now, source="dexscreener", not_found=False,
+            fields={"price_usd": D("1"), "liquidity_usd": D("100")}, screen=None,
+        )
+    await add_observation(
+        session, watch, age=420, now=now, source="unsupported_pool_id", not_found=False, fields={}, screen=None,
+    )
+    await session.commit()
+    row = await session.scalar(select(LaunchSnapshot).where(LaunchSnapshot.source == "unsupported_pool_id"))
+    assert row is not None and row.missed is False and row.price_usd is None and row.not_found is False
+    stats = await inventory(session)
+    assert stats.unsupported_slots == 1
+    assert stats.real_snapshots == 8
+    assert stats.pools_with_history == 1
+    assert stats.observed_coverage == 1
+    assert stats.elapsed_slots == 8
+    missed = await session.scalar(
+        select(LaunchSnapshot).where(LaunchSnapshot.watch_id == watch.id, LaunchSnapshot.missed.is_(True))
+    )
+    assert missed is None or missed.price_usd is None
+
+
+@pytest.mark.postgres
+async def test_heartbeat_records_the_last_success(session, monkeypatch):
+    from app.config import get_settings
+    from app.runtime.heartbeat import read_heartbeats, write_heartbeat
+
+    monkeypatch.setenv("DEXBOT_DATABASE_URL", URL)
+    get_settings.cache_clear()
+    await write_heartbeat("collector", success=True)
+    await write_heartbeat("collector", success=False, error="cycle deadline")
+    rows = {row["component"]: row for row in await read_heartbeats(session)}
+    assert rows["collector"]["last_success_at"] is not None
+    assert rows["collector"]["consecutive_failures"] == 1
+    assert rows["collector"]["last_error"] == "cycle deadline"
+    get_settings.cache_clear()

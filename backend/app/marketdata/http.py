@@ -187,9 +187,10 @@ class JsonHttpClient:
         self.max_retries = max_retries
         self.backoff_base_s = backoff_base_s
         self.rate_limit_penalty_s = rate_limit_penalty_s
+        self._timeout_s = timeout_s
         self._client = httpx.AsyncClient(
             base_url=base_url,
-            timeout=timeout_s,
+            timeout=httpx.Timeout(timeout_s, connect=min(5.0, timeout_s)),
             headers={"Accept": "application/json", "User-Agent": "dexbot/0.1", **(headers or {})},
             transport=transport,
         )
@@ -231,8 +232,8 @@ class JsonHttpClient:
             await bucket.acquire()
             self._requests += 1
             try:
-                resp = await self._client.get(path, params=params)
-            except (httpx.TimeoutException, httpx.TransportError) as exc:
+                resp = await asyncio.wait_for(self._client.get(path, params=params), timeout=self._timeout_s)
+            except (httpx.TimeoutException, httpx.TransportError, TimeoutError) as exc:
                 last_exc = exc
                 self._last_error = f"{type(exc).__name__}: {exc}"
                 await self._backoff(attempt)

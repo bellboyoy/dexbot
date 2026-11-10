@@ -3,10 +3,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.collector.schedule import due_at, partition
+from app.collector.schedule import due_at, is_usable, partition, snapshot_ages
 from app.db.models import LaunchSnapshot, LaunchWatch
 from app.domain.chains import Chain
 
@@ -136,6 +136,10 @@ class Inventory:
     real_snapshots: int
     oldest: datetime | None
     pools_with_history: int
+    observed_coverage: float | None = None
+    observed_slots: int = 0
+    elapsed_slots: int = 0
+    unsupported_slots: int = 0
 
     @property
     def days(self) -> float:
@@ -144,27 +148,48 @@ class Inventory:
         return (datetime.now(timezone.utc) - self.oldest).total_seconds() / 86400
 
 
+def _market_observation():
+    """A real look at the pool: a price, or a confirmed not-found. Misses and unsupported ids are not this."""
+    return or_(LaunchSnapshot.price_usd.is_not(None), LaunchSnapshot.not_found.is_(True))
+
+
 async def inventory(session: AsyncSession, min_real: int = 8) -> Inventory:
     watches = int(await session.scalar(select(func.count()).select_from(LaunchWatch)) or 0)
     snapshots = int(await session.scalar(select(func.count()).select_from(LaunchSnapshot)) or 0)
     real = int(await session.scalar(
-        select(func.count()).select_from(LaunchSnapshot).where(LaunchSnapshot.missed.is_(False))
+        select(func.count()).select_from(LaunchSnapshot).where(
+            LaunchSnapshot.missed.is_(False), _market_observation(),
+        )
+    ) or 0)
+    unsupported = int(await session.scalar(
+        select(func.count()).select_from(LaunchSnapshot).where(LaunchSnapshot.source == "unsupported_pool_id")
     ) or 0)
     oldest = await session.scalar(select(func.min(LaunchWatch.first_seen_at)))
-    per_watch = (
-        select(LaunchSnapshot.watch_id)
-        .where(LaunchSnapshot.missed.is_(False))
+    rows = (await session.execute(select(LaunchWatch.id, LaunchWatch.launch_at))).all()
+    counts = dict((await session.execute(
+        select(LaunchSnapshot.watch_id, func.count())
+        .where(LaunchSnapshot.missed.is_(False), _market_observation())
         .group_by(LaunchSnapshot.watch_id)
-        .having(func.count() >= min_real)
-        .subquery()
-    )
-    rich = int(await session.scalar(select(func.count()).select_from(per_watch)) or 0)
-    return Inventory(watches, snapshots, real, oldest, rich)
+    )).all())
+    now = datetime.now(timezone.utc)
+    ages = snapshot_ages()
+    usable = 0
+    observed_total = 0
+    elapsed_total = 0
+    for watch_id, launch in rows:
+        elapsed = sum(1 for age in ages if due_at(launch, age) <= now)
+        observed = int(counts.get(watch_id, 0))
+        observed_total += observed
+        elapsed_total += elapsed
+        if is_usable(observed, elapsed, min_observed=min_real):
+            usable += 1
+    coverage = (observed_total / elapsed_total) if elapsed_total else None
+    return Inventory(watches, snapshots, real, oldest, usable, coverage, observed_total, elapsed_total, unsupported)
 
 
 def ready(stats: Inventory, *, min_days: float = 14, min_pools: int = 30) -> tuple[bool, str]:
     if stats.days < min_days:
         return False, f"only {stats.days:.1f} days of snapshots; need {min_days:.0f}"
     if stats.pools_with_history < min_pools:
-        return False, f"{stats.pools_with_history} pools have enough snapshots; need {min_pools}"
+        return False, f"{stats.pools_with_history} pools have enough observed coverage; need {min_pools}"
     return True, "enough point-in-time history to rerun validation"

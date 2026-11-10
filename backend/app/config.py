@@ -82,6 +82,9 @@ class Settings(BaseSettings):
     collector_max_new_per_day: int = 150
     collector_snapshots_per_cycle: int = 4
     collector_screens_per_cycle: int = 2
+    cycle_deadline_s: float = 120.0
+    collector_stall_limit: int = 2
+    collector_jump_s: float = 120.0
 
     @field_validator("enabled_chains", mode="before")
     @classmethod

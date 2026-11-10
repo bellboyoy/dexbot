@@ -7,7 +7,7 @@ import respx
 from app.domain.chains import Chain
 from app.domain.market import DataSource
 from app.marketdata.dexscreener import DexScreenerProvider
-from app.marketdata.errors import CapabilityNotSupported, InvalidResponse
+from app.marketdata.errors import CapabilityNotSupported, InvalidResponse, UnsupportedPoolId
 from app.marketdata.http import JsonHttpClient, RateLimiter
 
 BASE = "https://api.dexscreener.com"
@@ -31,6 +31,25 @@ def test_parse_real_pair(load_fixture):
     assert snap.window("h1").buyers is None          # DexScreener has no unique-trader counts
     assert snap.window("m15").buys is None           # window DexScreener does not provide
     assert snap.pool_created_at is not None
+
+
+def test_parse_accepts_32_byte_pool_id():
+    token = "0x" + "cd" * 20
+    quote = "0x" + "11" * 20
+    snap = provider().parse_pair({
+        "chainId": "base", "pairAddress": "0x" + "AB" * 32,
+        "baseToken": {"address": token, "symbol": "AAA", "name": "Aaa"},
+        "quoteToken": {"address": quote, "symbol": "WETH"},
+        "priceUsd": "1.2",
+    })
+    assert snap is not None
+    assert snap.pool_address == "0x" + "ab" * 32
+    assert snap.base_token.address == token
+    assert provider().parse_pair({
+        "chainId": "base", "pairAddress": "0x" + "ab" * 32,
+        "baseToken": {"address": "0x" + "ef" * 32, "symbol": "NO"},
+        "priceUsd": "1",
+    }) is None
 
 
 def test_null_fields_stay_unknown(load_fixture):
@@ -58,6 +77,15 @@ async def test_get_pool(load_fixture):
     respx.get(f"{BASE}/latest/dex/pairs/solana/{addr}").mock(return_value=httpx.Response(200, json=data))
     snap = await provider().get_pool(Chain.SOLANA, addr)
     assert snap is not None and snap.pool_address == addr
+
+
+@respx.mock
+async def test_32_byte_pool_http_400_is_unsupported():
+    pool_id = "0x" + "ab" * 32
+    respx.get(f"{BASE}/latest/dex/pairs/base/{pool_id}").mock(return_value=httpx.Response(400, text="nope"))
+    with pytest.raises(UnsupportedPoolId) as caught:
+        await provider().get_pool(Chain.BASE, pool_id)
+    assert caught.value.reason == "unsupported_pool_id"
 
 
 @respx.mock

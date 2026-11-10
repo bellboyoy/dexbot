@@ -134,3 +134,31 @@ async def test_security_outage_blocks_instead_of_passing():
     decision = await ScreeningEngine(_Down(), ScreenThresholds()).screen(pool, now=NOW)
     assert not decision.allowed
     assert any(c.name == "provider_unavailable" and c.status is CheckStatus.UNKNOWN for c in decision.checks)
+
+
+async def test_goplus_skips_32_byte_pool_id_without_calling_the_provider():
+    from app.marketdata.errors import UnsupportedPoolId
+    from app.screening.providers import TokenSecurityClients, security_checks
+
+    called = False
+
+    class Client:
+        async def get_json(self, *args, **kwargs):
+            nonlocal called
+            called = True
+            raise AssertionError("provider should not be called")
+
+        async def aclose(self):
+            pass
+
+    clients = TokenSecurityClients(Client(), Client())
+    pool_id = "0x" + "ab" * 32
+    try:
+        await clients.goplus_evm(Chain.BASE, pool_id)
+        raise AssertionError("expected UnsupportedPoolId")
+    except UnsupportedPoolId as exc:
+        assert exc.reason == "unsupported_pool_id"
+    assert called is False
+    checks = await security_checks(clients, Chain.BASE, pool_id, young=True, thresholds=ScreenThresholds())
+    assert checks[0].name == "unsupported_pool_id"
+    assert checks[0].status is CheckStatus.UNKNOWN

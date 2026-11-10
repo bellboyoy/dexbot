@@ -15,7 +15,8 @@ from app.costs import buy_fill, fee_rate_for_snapshot, gas_usd, sell_fill
 from app.domain.chains import Chain
 from app.domain.market import PoolSnapshot, Timeframe
 from app.logging import get_logger
-from app.marketdata.errors import ProviderError
+from app.marketdata.errors import ProviderError, UnsupportedPoolId
+from app.runtime.heartbeat import write_heartbeat
 from app.paper.repository import (
     add_risk_event, apply_buy, apply_sell, ensure_pool, ensure_token, get_or_create_account,
     load_open, mark_position, record_screen, roll_day, session_scope,
@@ -89,6 +90,9 @@ def _exposure(rows: list[_Open]) -> list[OpenExposure]:
 async def _price(market, chain: Chain, pool: str) -> PoolSnapshot | None:
     try:
         return await market.get_pool(chain, pool)
+    except UnsupportedPoolId:
+        log.info("skip_pool", reason="unsupported_pool_id", chain=chain.value, pool=pool)
+        raise
     except ProviderError as exc:
         log.warning("mark_failed", chain=chain.value, pool=pool, error=str(exc))
         return None
@@ -102,7 +106,11 @@ async def plan_cycle(*, market, screening: ScreeningEngine, risk: RiskEngine, li
     marks: list[_Mark] = []
     errors: list[str] = []
     for row in opens:
-        snap = await _price(market, row.chain, row.pool_address)
+        try:
+            snap = await _price(market, row.chain, row.pool_address)
+        except UnsupportedPoolId:
+            errors.append(f"unsupported_pool_id {row.pool_address}")
+            continue
         if snap is None or snap.price_usd is None or snap.price_usd <= 0:
             errors.append(f"no price for {row.pool_address}")
             continue
@@ -126,6 +134,7 @@ async def plan_cycle(*, market, screening: ScreeningEngine, risk: RiskEngine, li
     screened = 0
     market_rejected = 0
     security_rejected = 0
+    skipped_unsupported = 0
     survivors: list[PoolSnapshot] = []
     market_notes: list[tuple[PoolSnapshot, object]] = []
     for snap in snaps:
@@ -149,6 +158,9 @@ async def plan_cycle(*, market, screening: ScreeningEngine, risk: RiskEngine, li
         except Exception as exc:
             errors.append(f"security {snap.pool_address}: {type(exc).__name__}")
             continue
+        if any(check.name == "unsupported_pool_id" for check in decision.checks):
+            skipped_unsupported += 1
+            log.info("skip_pool", reason="unsupported_pool_id", chain=snap.chain.value, pool=snap.pool_address)
         market_notes.append((snap, decision))
         if decision.allowed:
             approved.append((snap, decision))
@@ -178,6 +190,7 @@ async def plan_cycle(*, market, screening: ScreeningEngine, risk: RiskEngine, li
         "exits": exits, "marks": marks, "entries": entries, "screens": market_notes,
         "screened": screened, "market_rejected": market_rejected, "security_rejected": security_rejected,
         "errors": errors, "note": note, "source": f"{chain.value}:{kind}",
+        "skipped_unsupported": skipped_unsupported,
     }
 
 
@@ -300,6 +313,7 @@ async def apply_cycle(session, *, plan: dict, account_starting: Decimal, risk: R
         "entries": entries,
         "exits": len(plan["exits"]),
         "note": plan.get("note"),
+        "skipped_unsupported": plan.get("skipped_unsupported", 0),
     }
 
 
@@ -369,13 +383,21 @@ def _load() -> ValidationFile:
 
 
 async def run_loop(interval: float, balance: Decimal | None) -> None:
+    stalls = 0
     while True:
         started = asyncio.get_running_loop().time()
         try:
-            await run_once(balance=balance)
+            await asyncio.wait_for(run_once(balance=balance), timeout=get_settings().cycle_deadline_s)
+            stalls = 0
+            await write_heartbeat("paper_runner", success=True)
+        except TimeoutError:
+            stalls += 1
+            log.error("paper_cycle_deadline", consecutive=stalls)
+            await write_heartbeat("paper_runner", success=False, error="cycle deadline")
         except Exception as exc:
             log.error("paper_cycle_failed", error=type(exc).__name__)
             await _record_error(str(exc)[:500])
+            await write_heartbeat("paper_runner", success=False, error=type(exc).__name__)
         elapsed = asyncio.get_running_loop().time() - started
         await asyncio.sleep(max(1.0, interval - elapsed))
 
@@ -387,6 +409,5 @@ async def _record_error(message: str) -> None:
             async with session.begin():
                 account = await get_or_create_account(session, settings.paper_starting_balance_usd)
                 account.last_error = message
-                account.last_scan_at = datetime.now(timezone.utc)
     except Exception:
         log.error("paper_error_not_persisted")

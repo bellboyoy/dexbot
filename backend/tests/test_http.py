@@ -15,6 +15,18 @@ def make_client(**kw):
                           backoff_base_s=0.001, **kw)
 
 
+async def test_request_timeout_is_bounded():
+    client = make_client(timeout_s=0.05, max_retries=0)
+
+    async def hang(*args, **kwargs):
+        await asyncio.sleep(2)
+
+    client._client.get = hang
+    with pytest.raises(ProviderUnavailable):
+        await client.get_json("/x")
+    await client.aclose()
+
+
 async def test_rate_limiter_spaces_calls():
     rl = RateLimiter(rate=20, per=1.0, burst=1)   # one call per 50ms after the first
     loop = asyncio.get_running_loop()
