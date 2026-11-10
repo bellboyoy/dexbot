@@ -7,7 +7,8 @@ import respx
 
 from app.domain.chains import Chain
 from app.domain.market import Timeframe, TradeKind
-from app.marketdata.errors import InvalidResponse
+from app.domain.chains import InvalidAddress
+from app.marketdata.errors import InvalidResponse, UnsupportedPoolId
 from app.marketdata.geckoterminal import GeckoTerminalProvider
 from app.marketdata.http import JsonHttpClient, RateLimiter
 
@@ -38,6 +39,31 @@ def test_parse_pool_details(load_fixture):
     snap = provider().parse_pool(load_fixture("gecko_pool.json")["data"], Chain.SOLANA)
     assert snap.liquidity_usd is not None and snap.liquidity_usd > 0
     assert set(snap.windows) >= {"m5", "h1", "h24"}
+
+
+def _v4_pool(token: str) -> dict:
+    return {
+        "type": "pool",
+        "attributes": {
+            "address": "0x" + "AB" * 32, "name": "AAA / WETH",
+            "base_token_price_usd": "1.5", "reserve_in_usd": "1000",
+            "transactions": {}, "volume_usd": {}, "price_change_percentage": {},
+        },
+        "relationships": {
+            "base_token": {"data": {"id": f"base_{token}"}},
+            "quote_token": {"data": {"id": "base_" + "0x" + "11" * 20}},
+            "dex": {"data": {"id": "uniswap-v4-base"}},
+        },
+    }
+
+
+def test_parse_accepts_32_byte_pool_id_and_rejects_it_as_a_token():
+    token = "0x" + "cd" * 20
+    snap = provider().parse_pool(_v4_pool(token), Chain.BASE)
+    assert snap is not None
+    assert snap.pool_address == "0x" + "ab" * 32
+    assert snap.base_token.address == token
+    assert provider().parse_pool(_v4_pool("0x" + "ef" * 32), Chain.BASE) is None
 
 
 def test_parse_rejects_non_pool():
@@ -100,6 +126,17 @@ async def test_new_pools_and_discover(load_fixture):
         return_value=httpx.Response(200, json=load_fixture("gecko_new_pools.json")))
     leads = await provider().discover([Chain.SOLANA])
     assert leads and all(l.reason == "geckoterminal_new_pool" and l.pool_address for l in leads)
+
+
+@respx.mock
+async def test_32_byte_pool_http_400_is_unsupported_not_invalid_address():
+    pool_id = "0x" + "ab" * 32
+    respx.get(f"{BASE}/networks/base/pools/{pool_id}").mock(
+        return_value=httpx.Response(400, text="bad pool id"))
+    with pytest.raises(UnsupportedPoolId) as caught:
+        await provider().get_pool(Chain.BASE, pool_id)
+    assert caught.value.reason == "unsupported_pool_id"
+    assert not isinstance(caught.value, InvalidAddress)
 
 
 @respx.mock

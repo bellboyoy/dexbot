@@ -1,0 +1,99 @@
+{
+  "generated_at": "2026-11-09T23:41:45.212636+00:00",
+  "passed": [],
+  "rejected": {
+    "momentum": "time holdout: net P&L after costs is not positive",
+    "volume_spike": "time holdout: net P&L after costs is not positive",
+    "breakout": "time holdout: net P&L after costs is not positive",
+    "mean_reversion": "time holdout: inconclusive: 16 trades is below 20",
+    "pullback": "time holdout: inconclusive: 18 trades is below 20",
+    "volume_accel": "time holdout: net P&L after costs is not positive"
+  },
+  "configs": {},
+  "backtest": {
+    "momentum": {
+      "label": "m_f8_s10",
+      "oos_expectancy": "-0.1936416894715426252920963682",
+      "oos_net_pnl": "-19.17052725768271990391754045",
+      "oos_trades": 99,
+      "oos_max_drawdown_pct": "0.0192213241078546081116058696",
+      "train_expectancy": "-0.1556623817248926157577401903",
+      "train_trades": 246,
+      "pool_oos_expectancy": "-0.1595244042267973300507030012",
+      "pool_oos_trades": 374,
+      "passed": false,
+      "reason": "time holdout: net P&L after costs is not positive"
+    },
+    "volume_spike": {
+      "label": "vs_m25_s10",
+      "oos_expectancy": "-0.1820702247463678318164370408",
+      "oos_net_pnl": "-13.83733708072395521804921510",
+      "oos_trades": 76,
+      "oos_max_drawdown_pct": "0.0138373370807239552180492152",
+      "train_expectancy": "-0.1355421847410752144038849169",
+      "train_trades": 211,
+      "pool_oos_expectancy": "-0.1265703099640504796796944551",
+      "pool_oos_trades": 198,
+      "passed": false,
+      "reason": "time holdout: net P&L after costs is not positive"
+    },
+    "breakout": {
+      "label": "bo_e30_s10",
+      "oos_expectancy": "-0.2545607047071724072632021583",
+      "oos_net_pnl": "-7.636821141215172217896064750",
+      "oos_trades": 30,
+      "oos_max_drawdown_pct": "0.0076370794427075796612639686",
+      "train_expectancy": "-0.1589796603790721152809715455",
+      "train_trades": 87,
+      "pool_oos_expectancy": "-0.2048440776513311326484382717",
+      "pool_oos_trades": 65,
+      "passed": false,
+      "reason": "time holdout: net P&L after costs is not positive"
+    },
+    "mean_reversion": {
+      "label": "mr_r25_s10",
+      "oos_expectancy": "-0.1917008993469188691977857447",
+      "oos_net_pnl": "-3.067214389550701907164571915",
+      "oos_trades": 16,
+      "oos_max_drawdown_pct": "0.0036614376541476652960527253",
+      "train_expectancy": "-0.1899704908256387910156454101",
+      "train_trades": 28,
+      "pool_oos_expectancy": "-0.431356468562872881771514501",
+      "pool_oos_trades": 23,
+      "passed": false,
+      "reason": "time holdout: inconclusive: 16 trades is below 20"
+    },
+    "pullback": {
+      "label": "pb_d4_s10_trail",
+      "oos_expectancy": "-0.1422873009919961685344867137",
+      "oos_net_pnl": "-2.561171417855931033620760847",
+      "oos_trades": 18,
+      "oos_max_drawdown_pct": "0.0030424305875747925339781431",
+      "train_expectancy": "-0.3314734832074373030959549445",
+      "train_trades": 44,
+      "pool_oos_expectancy": "-0.1950751358898730712676395863",
+      "pool_oos_trades": 111,
+      "passed": false,
+      "reason": "time holdout: inconclusive: 18 trades is below 20"
+    },
+    "volume_accel": {
+      "label": "va_k3_s10_tight",
+      "oos_expectancy": "-0.1569376918123942246118325709",
+      "oos_net_pnl": "-14.90908072217745133812409424",
+      "oos_trades": 95,
+      "oos_max_drawdown_pct": "0.0149212546342250713978135834",
+      "train_expectancy": "-0.1256182211520902316879662368",
+      "train_trades": 243,
+      "pool_oos_expectancy": "-0.1026275508654641489038172192",
+      "pool_oos_trades": 172,
+      "passed": false,
+      "reason": "time holdout: net P&L after costs is not positive"
+    }
+  },
+  "timeframe": "15m",
+  "configs_tried": 35,
+  "note": "Parameters were chosen only on the train pools and the earlier 70% of their bars. Promotion uses the later 30% of those pools, a held-out set of pools, a 3-window walk-forward of the frozen parameters, and a check that a neighbouring configuration also has positive out-of-sample expectancy. GeckoTerminal does not publish historical pool reserves or a historical new-pool archive on the keyless API (pages past 10 return 401; new_pools is only the last few minutes, checked 2026-11-09). Liquidity in the primary result is the spot snapshot. The thin cohort is low spot liquidity with age of at least a few hours, which is the closest free sample of failed launches, not a point-in-time listing from months ago. 5-minute and 1-minute results are reported for the frozen 15-minute champion and are not used to pick it. The number of configurations tried is the size of the pre-registered grid.",
+  "source": "/workspace/docs/research-results.json",
+  "min_trades": 20,
+  "max_drawdown_fraction": "0.25"
+}

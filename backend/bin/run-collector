@@ -1,0 +1,13 @@
+#!/bin/sh
+# Start the paper-only launch collector. Migrations, then the long-running loop.
+# The database URL is an environment variable. This script never prints it.
+set -eu
+cd /app
+case "${DEXBOT_DATABASE_URL:-}" in
+  ""|*127.0.0.1*|*localhost*)
+    echo "DEXBOT_DATABASE_URL must be the hosted Postgres URL." >&2
+    exit 1
+    ;;
+esac
+alembic upgrade head
+exec python -m app.collector

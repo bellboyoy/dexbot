@@ -106,6 +106,29 @@ async def test_discover_dedupes_and_survives_failures():
     assert await MarketDataService([a, b]).discover([Chain.SOLANA]) == [lead]
 
 
+async def test_ohlcv_requests_one_extra_closed_bar():
+    class Recorder:
+        name = "geckoterminal"
+        capabilities = frozenset({Capability.OHLCV})
+
+        def __init__(self):
+            self.limit = None
+
+        async def get_ohlcv(self, chain, pool, timeframe, limit=100, before_ts=None):
+            self.limit = limit
+            return []
+
+        def status(self):
+            return ProviderStatus(self.name, "closed", None, None, 0, 0, 0)
+
+        async def aclose(self):
+            pass
+
+    recorder = Recorder()
+    await MarketDataService([recorder]).get_ohlcv(Chain.SOLANA, POOL, Timeframe.M5, limit=10)
+    assert recorder.limit == 11
+
+
 async def test_ohlcv_drops_forming_candle():
     closed = Candle(NOW, Timeframe.M5, *(Decimal(1),) * 5, is_closed=True)
     forming = replace(closed, is_closed=False)

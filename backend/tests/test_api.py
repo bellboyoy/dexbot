@@ -25,6 +25,8 @@ def client(monkeypatch):
 def test_health_is_paper_and_leaks_nothing(client):
     r = client.get("/health")
     assert r.status_code == 200 and r.json()["mode"] == "paper"
+    beats = r.json()["heartbeats"]
+    assert beats is None or isinstance(beats, list)
     body = r.text + client.get("/openapi.json").text
     for v in SECRETS.values():
         assert v not in body
@@ -42,3 +44,22 @@ def test_unknown_chain_rejected(client):
 def test_no_trading_or_wallet_routes(client):
     paths = client.get("/openapi.json").json()["paths"]
     assert not [p for p in paths if any(w in p for w in ("trade", "wallet", "order", "live", "sign"))]
+
+
+def test_dashboard_is_labelled_paper(client):
+    response = client.get("/dashboard")
+    assert response.status_code == 200
+    body = response.text
+    assert "PAPER TRADING" in body
+    assert "cannot sign" in body
+    assert "Simulated funds only" in body
+
+
+def test_paper_summary_without_database_is_unavailable(client, monkeypatch):
+    monkeypatch.setenv("DEXBOT_DATABASE_URL", "postgresql+asyncpg://dexbot:dexbot@127.0.0.1:1/none")
+    from app.config import get_settings
+    get_settings.cache_clear()
+    response = client.get("/api/paper/summary")
+    assert response.status_code == 503
+    assert "paper" in response.text.lower()
+    get_settings.cache_clear()

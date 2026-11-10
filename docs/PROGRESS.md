@@ -48,5 +48,20 @@ Verification caveats:
 - During a DexScreener outage, GeckoTerminal alone cannot carry scanning load at ~5 calls/min. Requests fail closed (reported unavailable) rather than returning stale or partial data. A CoinGecko API key is the fix before paper trading at scale.
 - API JSON renders Decimals as floats (display only; storage and internal math use Decimal).
 
-## Next: Phase 2
-Snapshot collector persisting to Postgres, screening profiles for new vs established tokens, Redis cache, Alembic, RPC-based monitoring of watched pools.
+## Paper stack (2026-11-09)
+
+Added on top of Phase 1, still paper-only. `Settings.trading_mode` is unchanged. See `docs/AUDIT.md` for the bugs fixed in the rate limiter, the half-open breaker and closed-candle fetches, and for the provider checks (RugCheck, GoPlus EVM, GoPlus Solana).
+
+The backtest result and the list of strategies the runner may open are generated, not hand-written: `docs/backtest-results.json` and `docs/strategy_validation.json`.
+
+## Research round (2026-11-09)
+
+Cached a 14-pool Solana/Base sample (thin, mid, and liquid cohorts; 15m, 5m, and 1m) and searched a pre-registered grid of 35 configurations on the train set only. Nothing passed the out-of-sample gate. Details are in `docs/research-results.json`. The paper runner still opens nothing.
+
+The keyless GeckoTerminal API does not provide a historical new-pool archive or reserve history. Liquidity in that study is the spot snapshot.
+
+A launch collector (`python -m app.collector`) now records Solana and Base pools from first sight through 24 hours, including missed slots and pools that 404 later. Validation of that point-in-time set waits until 14 days and 30 pools exist (`python -m app.research.pit`). See `docs/RUNNING.md`.
+
+## Next
+
+Keep collecting our own snapshots, including liquidity. The free OHLCV history is too short, and too biased toward pools that are still listed, to treat a single backtest pass as an edge. Redis is still not the shared cache. Live execution remains unbuilt and unauthorised.

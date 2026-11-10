@@ -16,6 +16,7 @@ from typing import Any
 
 from app.domain.chains import (
     GECKOTERMINAL_NETWORK_IDS, Chain, InvalidAddress, chain_from_provider_id, normalize_address,
+    normalize_pool_id,
 )
 from app.domain.market import (
     WINDOWS, Candle, DataSource, DiscoveredToken, PoolSnapshot, PoolTrade, Timeframe, TokenRef,
@@ -23,7 +24,7 @@ from app.domain.market import (
 )
 from app.logging import get_logger
 from app.marketdata.base import Capability
-from app.marketdata.errors import CapabilityNotSupported, InvalidResponse
+from app.marketdata.errors import CapabilityNotSupported, InvalidResponse, UnsupportedPoolId
 from app.marketdata.http import JsonHttpClient, ProviderStatus
 from app.marketdata.parsing import dec, int_or_none, iso, utcnow
 
@@ -74,7 +75,7 @@ class GeckoTerminalProvider:
         name = a.get("name") or ""
         base_sym, _, quote_sym = name.partition(" / ")
         try:
-            pool_addr = normalize_address(chain, a.get("address", ""))
+            pool_addr = normalize_pool_id(chain, a.get("address", ""))
             base_addr = self._rel_address(network, rel.get("base_token"))
             if base_addr is None:
                 raise InvalidAddress("missing base token")
@@ -137,9 +138,13 @@ class GeckoTerminalProvider:
 
     # --- queries -------------------------------------------------------------
     async def get_pool(self, chain: Chain, pool_address: str) -> PoolSnapshot | None:
-        addr = normalize_address(chain, pool_address)
-        data = await self.client.get_json(f"/networks/{self._network(chain)}/pools/{addr}",
-                                          cache_ttl_s=30, allow_404=True)
+        addr = normalize_pool_id(chain, pool_address)
+        try:
+            data = await self.client.get_json(f"/networks/{self._network(chain)}/pools/{addr}",
+                                              cache_ttl_s=30, allow_404=True)
+        except InvalidResponse as exc:
+            _unsupported("geckoterminal", addr, exc)
+            raise
         if not data:
             return None
         item = data.get("data")
@@ -167,20 +172,28 @@ class GeckoTerminalProvider:
 
     async def get_ohlcv(self, chain: Chain, pool_address: str, timeframe: Timeframe,
                         limit: int = 100, before_ts: int | None = None) -> list[Candle]:
-        addr = normalize_address(chain, pool_address)
+        addr = normalize_pool_id(chain, pool_address)
         unit, agg = OHLCV_PARAMS[timeframe]
         params: dict[str, Any] = {"aggregate": agg, "limit": max(1, min(limit, OHLCV_MAX_LIMIT)),
                                   "currency": "usd", "token": "base"}
         if before_ts is not None:
             params["before_timestamp"] = before_ts
-        data = await self.client.get_json(f"/networks/{self._network(chain)}/pools/{addr}/ohlcv/{unit}",
-                                          params, cache_ttl_s=30, allow_404=True)
+        try:
+            data = await self.client.get_json(f"/networks/{self._network(chain)}/pools/{addr}/ohlcv/{unit}",
+                                              params, cache_ttl_s=30, allow_404=True)
+        except InvalidResponse as exc:
+            _unsupported("geckoterminal", addr, exc)
+            raise
         return self.parse_ohlcv(data, timeframe) if data else []
 
     async def get_trades(self, chain: Chain, pool_address: str) -> list[PoolTrade]:
-        addr = normalize_address(chain, pool_address)
-        data = await self.client.get_json(f"/networks/{self._network(chain)}/pools/{addr}/trades",
-                                          cache_ttl_s=30, allow_404=True)
+        addr = normalize_pool_id(chain, pool_address)
+        try:
+            data = await self.client.get_json(f"/networks/{self._network(chain)}/pools/{addr}/trades",
+                                              cache_ttl_s=30, allow_404=True)
+        except InvalidResponse as exc:
+            _unsupported("geckoterminal", addr, exc)
+            raise
         items = (data or {}).get("data") or []
         out: list[PoolTrade] = []
         for it in items:
@@ -195,3 +208,9 @@ class GeckoTerminalProvider:
 
     async def get_token_pools(self, chain: Chain, token_address: str) -> list[PoolSnapshot]:
         raise CapabilityNotSupported(self.name, "token_pools (not implemented for keyless tier)")
+
+
+def _unsupported(provider: str, pool_id: str, exc: InvalidResponse) -> None:
+    from app.domain.chains import is_extended_pool_id
+    if is_extended_pool_id(pool_id) and "HTTP 400" in str(exc):
+        raise UnsupportedPoolId(provider, "unsupported_pool_id") from exc

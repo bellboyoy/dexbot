@@ -1,17 +1,25 @@
 """FastAPI entrypoint. Phase 1 exposes health and read-only market data endpoints."""
 from __future__ import annotations
 
+import asyncio
 from contextlib import asynccontextmanager
 from dataclasses import asdict
 
 from fastapi import FastAPI, HTTPException, Query
+from fastapi.responses import HTMLResponse
 
 from app.config import get_settings
+from app.dashboard import DASHBOARD_HTML
 from app.domain.chains import Chain, InvalidAddress
 from app.domain.market import Timeframe
-from app.logging import configure_logging
+from app.logging import configure_logging, get_logger
 from app.marketdata.aggregator import MarketDataService, build_market_data_service
 from app.marketdata.errors import ProviderUnavailable
+from app.paper.repository import build_summary, session_scope
+from app.runtime.heartbeat import read_heartbeats
+from app.strategy.validation import load_validation
+
+log = get_logger(__name__)
 
 
 @asynccontextmanager
@@ -36,10 +44,28 @@ def _serialize(obj):
     return d
 
 
+async def _heartbeats() -> list[dict] | None:
+    settings = get_settings()
+
+    async def _read() -> list[dict]:
+        async with session_scope(settings.database_url) as session:
+            return await read_heartbeats(session)
+
+    try:
+        return await asyncio.wait_for(_read(), timeout=5)
+    except Exception:
+        log.warning("heartbeat_unavailable")
+        return None
+
+
 @app.get("/health")
 async def health():
     s = get_settings()
-    return {"status": "ok", "mode": s.trading_mode, "chains": s.enabled_chains, "providers": _market().health()}
+    return {
+        "status": "ok", "mode": s.trading_mode, "paper_only": True, "execution": "disabled",
+        "chains": s.enabled_chains, "providers": _market().health(),
+        "heartbeats": await _heartbeats(),
+    }
 
 
 @app.get("/market/{chain}/pools/{address}")
@@ -73,3 +99,61 @@ async def new_pools(chain: Chain):
         return [_serialize(s) for s in await _market().get_new_pools(chain)]
     except ProviderUnavailable as exc:
         raise HTTPException(503, str(exc))
+
+
+async def _paper_ledger() -> dict:
+    settings = get_settings()
+    try:
+        validation = load_validation()
+        known = list(validation.passed) + [name for name in validation.rejected if not name.startswith("_")]
+        async with session_scope(settings.database_url) as session:
+            data = await build_summary(
+                session, gas_reserve=settings.risk_gas_reserve_usd, known_strategies=known,
+            )
+            data["heartbeats"] = await read_heartbeats(session)
+    except Exception as exc:
+        log.warning("paper_summary_unavailable", error=type(exc).__name__)
+        raise HTTPException(503, "paper ledger database unavailable") from exc
+    data["validated_strategies"] = list(validation.passed)
+    data["validation_note"] = validation.note
+    data["validation_timeframe"] = validation.timeframe
+    data["configs_tried"] = None
+    by_name = {row["strategy"]: row for row in data.get("strategies") or []}
+    for name, stats in (validation.backtest or {}).items():
+        row = by_name.setdefault(name, {"strategy": name, "trades": 0, "wins": 0, "losses": 0,
+                                        "win_rate": None, "average_win_usd": None, "average_loss_usd": None,
+                                        "net_pnl_usd": "0", "fees_usd": "0", "gas_usd": "0", "open_positions": 0})
+        row["backtest_oos_expectancy"] = stats.get("oos_expectancy")
+        row["backtest_oos_net_pnl"] = stats.get("oos_net_pnl")
+        row["backtest_oos_trades"] = stats.get("oos_trades")
+        row["backtest_train_expectancy"] = stats.get("train_expectancy")
+        row["backtest_passed"] = stats.get("passed")
+        row["backtest_reason"] = stats.get("reason")
+    data["strategies"] = [by_name[k] for k in sorted(by_name)]
+    data["providers"] = _market().health()
+    return data
+
+
+@app.get("/dashboard", response_class=HTMLResponse)
+async def dashboard():
+    return DASHBOARD_HTML
+
+
+@app.get("/api/paper/summary")
+async def paper_summary():
+    return await _paper_ledger()
+
+
+@app.get("/api/paper/positions")
+async def paper_positions():
+    data = await _paper_ledger()
+    return {"mode": "paper", "label": "PAPER", "open_positions": data["open_positions"]}
+
+
+@app.get("/api/paper/strategies")
+async def paper_strategies():
+    data = await _paper_ledger()
+    return {
+        "mode": "paper", "label": "PAPER", "strategies": data["strategies"],
+        "validated_strategies": data["validated_strategies"], "validation_note": data["validation_note"],
+    }

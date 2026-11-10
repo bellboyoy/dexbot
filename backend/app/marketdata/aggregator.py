@@ -112,10 +112,15 @@ class MarketDataService:
 
     async def get_ohlcv(self, chain: Chain, pool_address: str, timeframe: Timeframe, limit: int = 100,
                         before_ts: int | None = None, closed_only: bool = True) -> list[Candle]:
+        # The newest candle is usually still forming. Ask for one extra bar so `limit`
+        # means that many closed bars, not "limit rows minus the one we then drop".
+        fetch = limit + 1 if closed_only else limit
         candles = await self._first(Capability.OHLCV, lambda p: p.get_ohlcv(chain, pool_address, timeframe,
-                                                                             limit, before_ts))
-        # The newest candle is usually still forming; strategies must not see it as final.
-        return [c for c in candles if c.is_closed] if closed_only else candles
+                                                                             fetch, before_ts))
+        if not closed_only:
+            return candles
+        closed = [c for c in candles if c.is_closed]
+        return closed[-limit:] if len(closed) > limit else closed
 
     async def get_trades(self, chain: Chain, pool_address: str) -> list[PoolTrade]:
         return await self._first(Capability.TRADES, lambda p: p.get_trades(chain, pool_address))

@@ -1,12 +1,12 @@
 """SQLAlchemy models for the PostgreSQL schema (see docs/ARCHITECTURE.md §5)."""
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import date, datetime
 from decimal import Decimal
 from typing import Any
 
 from sqlalchemy import (
-    BigInteger, Boolean, DateTime, Enum, ForeignKey, Index, Integer, Numeric, String, Text,
+    BigInteger, Boolean, Date, DateTime, Enum, ForeignKey, Index, Integer, Numeric, String, Text,
     UniqueConstraint, func,
 )
 from sqlalchemy.dialects.postgresql import JSONB
@@ -16,6 +16,7 @@ from app.domain.chains import Chain
 
 USD = Numeric(38, 18)
 RAW = Numeric(78, 0)          # fits uint256
+FEE_RATE = Numeric(12, 8)
 CHAIN = Enum(Chain, name="chain", values_callable=lambda e: [m.value for m in e])
 
 
@@ -46,7 +47,7 @@ class Pool(Timestamps, Base):
     __table_args__ = (UniqueConstraint("chain", "address"),)
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
     chain: Mapped[Chain] = mapped_column(CHAIN)
-    address: Mapped[str] = mapped_column(String(64))
+    address: Mapped[str] = mapped_column(String(80))
     dex_id: Mapped[str | None] = mapped_column(String(64))
     base_token_id: Mapped[int] = mapped_column(ForeignKey("tokens.id"))
     quote_token_id: Mapped[int | None] = mapped_column(ForeignKey("tokens.id"))
@@ -156,6 +157,12 @@ class Position(Timestamps, Base):
     fees_usd: Mapped[Decimal] = mapped_column(USD, default=0)
     gas_usd: Mapped[Decimal] = mapped_column(USD, default=0)
     net_pnl_usd: Mapped[Decimal | None] = mapped_column(USD)
+    # Paper ledger. Raw on-chain amounts stay null; token_qty is the simulated quantity.
+    token_qty: Mapped[Decimal | None] = mapped_column(USD)
+    mark_price_usd: Mapped[Decimal | None] = mapped_column(USD)
+    unrealized_pnl_usd: Mapped[Decimal | None] = mapped_column(USD)
+    entry_liquidity_usd: Mapped[Decimal | None] = mapped_column(USD)
+    fee_rate: Mapped[Decimal | None] = mapped_column(FEE_RATE)
 
 
 class Trade(Base):
@@ -172,6 +179,7 @@ class Trade(Base):
     gas_usd: Mapped[Decimal] = mapped_column(USD)
     slippage_bps: Mapped[int | None] = mapped_column(Integer)
     price_impact_bps: Mapped[int | None] = mapped_column(Integer)
+    slippage_usd: Mapped[Decimal | None] = mapped_column(USD)
     executed_at: Mapped[datetime]
     created_at: Mapped[datetime] = mapped_column(server_default=func.now())
 
@@ -189,6 +197,103 @@ class Transaction(Timestamps, Base):
     nonce: Mapped[int | None] = mapped_column(BigInteger)
     error: Mapped[str | None] = mapped_column(Text)
     details: Mapped[dict[str, Any] | None]
+
+
+class LaunchWatch(Timestamps, Base):
+    """A newly seen pool followed until about 24 hours after launch. No execution."""
+    __tablename__ = "launch_watches"
+    __table_args__ = (
+        UniqueConstraint("chain", "pool_address"),
+        Index("ix_launch_watches_due", "status", "next_due_at"),
+    )
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    chain: Mapped[Chain] = mapped_column(CHAIN)
+    pool_address: Mapped[str] = mapped_column(String(80))
+    token_address: Mapped[str] = mapped_column(String(64))
+    quote_address: Mapped[str | None] = mapped_column(String(64))
+    symbol: Mapped[str | None] = mapped_column(String(64))
+    dex_id: Mapped[str | None] = mapped_column(String(64))
+    pool_created_at: Mapped[datetime | None]
+    first_seen_at: Mapped[datetime]
+    launch_at: Mapped[datetime]
+    status: Mapped[str] = mapped_column(String(16))
+    next_due_at: Mapped[datetime | None]
+    snapshots_taken: Mapped[int] = mapped_column(Integer)
+    last_error: Mapped[str | None] = mapped_column(Text)
+
+
+class LaunchSnapshot(Base):
+    """One scheduled observation. A missed slot is stored with null market fields, not invented numbers."""
+    __tablename__ = "launch_snapshots"
+    __table_args__ = (
+        UniqueConstraint("watch_id", "age_minutes"),
+        Index("ix_launch_snapshots_watch", "watch_id"),
+    )
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    watch_id: Mapped[int] = mapped_column(ForeignKey("launch_watches.id"))
+    chain: Mapped[Chain] = mapped_column(CHAIN)
+    age_minutes: Mapped[int] = mapped_column(Integer)
+    due_at: Mapped[datetime]
+    observed_at: Mapped[datetime | None]
+    missed: Mapped[bool] = mapped_column(Boolean)
+    not_found: Mapped[bool] = mapped_column(Boolean)
+    source: Mapped[str | None] = mapped_column(String(32))
+    price_usd: Mapped[Decimal | None] = mapped_column(USD)
+    liquidity_usd: Mapped[Decimal | None] = mapped_column(USD)
+    fdv_usd: Mapped[Decimal | None] = mapped_column(USD)
+    market_cap_usd: Mapped[Decimal | None] = mapped_column(USD)
+    base_reserve: Mapped[Decimal | None] = mapped_column(USD)
+    quote_reserve: Mapped[Decimal | None] = mapped_column(USD)
+    volume_m5: Mapped[Decimal | None] = mapped_column(USD)
+    volume_h1: Mapped[Decimal | None] = mapped_column(USD)
+    volume_h24: Mapped[Decimal | None] = mapped_column(USD)
+    buys_m5: Mapped[int | None] = mapped_column(Integer)
+    sells_m5: Mapped[int | None] = mapped_column(Integer)
+    buys_h1: Mapped[int | None] = mapped_column(Integer)
+    sells_h1: Mapped[int | None] = mapped_column(Integer)
+    buyers_m5: Mapped[int | None] = mapped_column(Integer)
+    sellers_m5: Mapped[int | None] = mapped_column(Integer)
+    buyers_h1: Mapped[int | None] = mapped_column(Integer)
+    sellers_h1: Mapped[int | None] = mapped_column(Integer)
+    screen_allowed: Mapped[bool | None] = mapped_column(Boolean)
+    screen_reason: Mapped[str | None] = mapped_column(Text)
+    screen_checks: Mapped[dict[str, Any] | None]
+    created_at: Mapped[datetime] = mapped_column(server_default=func.now())
+
+
+class ProcessHeartbeat(Base):
+    """Last successful cycle of a long-running paper process. No secrets."""
+    __tablename__ = "process_heartbeats"
+    component: Mapped[str] = mapped_column(String(32), primary_key=True)
+    last_success_at: Mapped[datetime | None]
+    last_attempt_at: Mapped[datetime | None]
+    last_error: Mapped[str | None] = mapped_column(Text)
+    consecutive_failures: Mapped[int] = mapped_column(Integer)
+    updated_at: Mapped[datetime] = mapped_column(server_default=func.now())
+
+
+class PaperAccount(Timestamps, Base):
+    """One simulated cash account. `mode` is written as paper and the runner refuses anything else."""
+    __tablename__ = "paper_accounts"
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    name: Mapped[str] = mapped_column(String(64), unique=True)
+    mode: Mapped[str] = mapped_column(String(8))
+    starting_balance_usd: Mapped[Decimal] = mapped_column(USD)
+    cash_usd: Mapped[Decimal] = mapped_column(USD)
+    realized_pnl_usd: Mapped[Decimal] = mapped_column(USD)
+    fees_usd: Mapped[Decimal] = mapped_column(USD)
+    gas_usd: Mapped[Decimal] = mapped_column(USD)
+    slippage_usd: Mapped[Decimal] = mapped_column(USD)
+    day_utc: Mapped[date] = mapped_column(Date)
+    day_realized_pnl_usd: Mapped[Decimal] = mapped_column(USD)
+    consecutive_losses: Mapped[int] = mapped_column(Integer)
+    cooldown_until: Mapped[datetime | None]
+    kill_switch: Mapped[bool] = mapped_column(Boolean)
+    kill_reason: Mapped[str | None] = mapped_column(Text)
+    last_scan_at: Mapped[datetime | None]
+    last_error: Mapped[str | None] = mapped_column(Text)
+    scan_count: Mapped[int] = mapped_column(Integer)
+    last_cycle: Mapped[dict[str, Any] | None]
 
 
 class PortfolioBalance(Base):
