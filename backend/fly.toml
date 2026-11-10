@@ -1,0 +1,26 @@
+# Always-on paper launch collector. One machine. No public HTTP service.
+# The database URL is a Fly secret (DEXBOT_DATABASE_URL), not a value in this file.
+# Change `app` if `fly apps create` says the name is taken.
+app = "dexbot-launch-collector"
+primary_region = "iad"
+
+[build]
+  dockerfile = "Dockerfile"
+  build-target = "collector"
+
+[env]
+  DEXBOT_LOG_JSON = "true"
+  DEXBOT_COLLECTOR_POLL_S = "20"
+  DEXBOT_COLLECTOR_GT_INTERVAL_S = "180"
+  DEXBOT_COLLECTOR_MAX_NEW_PER_DAY = "40"
+  DEXBOT_COLLECTOR_MAX_ACTIVE = "80"
+  DEXBOT_COLLECTOR_SNAPSHOTS_PER_CYCLE = "4"
+  DEXBOT_COLLECTOR_SCREENS_PER_CYCLE = "2"
+
+[processes]
+  collector = "/app/bin/run-collector"
+
+[[vm]]
+  memory = "256mb"
+  cpu_kind = "shared"
+  cpus = 1

@@ -28,6 +28,8 @@ class Settings(BaseSettings):
     enabled_chains: Annotated[list[Chain], NoDecode] = Field(default_factory=lambda: [Chain.SOLANA, Chain.BASE, Chain.BSC])
 
     database_url: str = "postgresql+asyncpg://dexbot:dexbot@localhost:5432/dexbot"
+    # Read-only source for `python -m app.research.sync`. Never has a default host.
+    hosted_database_url: str | None = None
     redis_url: str = "redis://localhost:6379/0"
 
     dexscreener_base_url: str = "https://api.dexscreener.com"
@@ -91,6 +93,13 @@ class Settings(BaseSettings):
     def _split_chains(cls, v: object) -> object:
         if isinstance(v, str):
             return [c.strip() for c in v.split(",") if c.strip()]
+        return v
+
+    @field_validator("hosted_database_url", mode="before")
+    @classmethod
+    def _blank_hosted_url(cls, v: object) -> object:
+        if v is None or (isinstance(v, str) and not v.strip()):
+            return None
         return v
 
     @property

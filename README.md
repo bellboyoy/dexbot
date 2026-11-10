@@ -156,7 +156,7 @@ The page is labelled PAPER. Simulated balance is mark-to-market equity. Realised
 
 ## Launch collector
 
-Records new Solana and Base pools as they appear, including ones that later die, and snapshots them at 1, 5, 15, 30, 60 and 240 minutes, then hourly through 24 hours. DexScreener does the bulk reads. GeckoTerminal is limited to one call every 3 minutes. At the default cap of 150 new pools per day that is about 10 MB/day including indexes. 32-byte pool ids are kept. A slot skipped by a provider is counted as `unsupported_pool_id`. After a suspend, overdue slots are stored as missed, not filled in. Two cycle deadlines in a row exit 1. See [docs/RUNNING.md](docs/RUNNING.md).
+Records new Solana and Base pools as they appear, including ones that later die, and snapshots them at 1, 5, 15, 30, 60 and 240 minutes, then hourly through 24 hours. DexScreener does the bulk reads. GeckoTerminal is limited to one call every 3 minutes. At the default cap of 150 new pools per day that is about 10 MB/day including indexes. 32-byte pool ids are kept. A slot skipped by a provider is counted as `unsupported_pool_id`. After a suspend, overdue slots are stored as missed, not filled in. Two cycle deadlines in a row exit 1. A sleeping dev box cannot keep that schedule. The always-on setup (one Fly.io machine, Supabase Postgres, `python -m app.research.sync` to copy rows back) is [docs/HOSTING.md](docs/HOSTING.md). Local commands are in [docs/RUNNING.md](docs/RUNNING.md).
 
 ```bash
 cd backend

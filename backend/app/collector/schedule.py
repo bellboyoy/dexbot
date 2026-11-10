@@ -30,6 +30,19 @@ def tolerance_seconds(age_minutes: int) -> int:
     return 180
 
 
+def schedule_can_hit(poll_s: float, skew_s: float, age_minutes: int) -> bool:
+    """Whether a poll loop can still observe this slot inside its existing window.
+
+    The window is only `tolerance_seconds` long and is not widened for a coarse
+    scheduler. A GitHub Actions cron cannot be finer than 5 minutes and is often
+    later than that, which is longer than every window in this schedule, so a
+    cron run is recorded as missed instead of being treated as on time.
+    """
+    if poll_s <= 0 or skew_s < 0:
+        return False
+    return poll_s + skew_s <= tolerance_seconds(age_minutes)
+
+
 def classify(launch: datetime, age_minutes: int, now: datetime) -> str:
     """`wait`, `due`, or `missed`."""
     when = due_at(launch, age_minutes)

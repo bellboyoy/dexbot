@@ -2,6 +2,8 @@
 
 Paper only. Nothing in these processes signs, approves, or submits a transaction. Postgres and Redis listen on 127.0.0.1. The box this was sized for has about 2 GB free: the collector does not keep candles in memory, and the default cap is 150 new pools per day.
 
+This box sleeps, so it cannot fill the 14-day snapshot set. The always-on collector is a separate Fly.io machine and a Supabase database. Setup is [HOSTING.md](HOSTING.md). After that machine is logging cycles, stop the local `python -m app.collector` and pull rows down with `python -m app.research.sync` before `python -m app.research.pit`.
+
 GeckoTerminal's keyless limit is about 5 calls per minute **per IP**, shared by every process. The launch collector uses DexScreener for bulk reads and makes at most one GeckoTerminal call every 3 minutes. Leave the rest for the paper runner. Do not also run `python -m app.research.collect` while both are up.
 
 ## Processes

@@ -3,7 +3,7 @@ from logging.config import fileConfig
 
 from sqlalchemy import pool
 from sqlalchemy.engine import Connection
-from sqlalchemy.ext.asyncio import async_engine_from_config
+from sqlalchemy.ext.asyncio import create_async_engine
 
 from alembic import context
 
@@ -18,13 +18,16 @@ if config.config_file_name is not None:
 
 from app.config import get_settings  # noqa: E402
 from app.db.models import Base  # noqa: E402
+from app.db.session import split_database_url  # noqa: E402
 
 target_metadata = Base.metadata
 
 # The database URL always comes from the environment (DEXBOT_DATABASE_URL), never from
-# alembic.ini, so credentials are not committed.
+# alembic.ini, so credentials are not committed. Percent signs are escaped because
+# ConfigParser would otherwise treat them as interpolation.
 if not config.get_main_option("sqlalchemy.url"):
-    config.set_main_option("sqlalchemy.url", get_settings().database_url)
+    _url, _connect_args = split_database_url(get_settings().database_url)
+    config.set_main_option("sqlalchemy.url", _url.replace("%", "%%"))
 
 # other values from the config, defined by the needs of env.py,
 # can be acquired:
@@ -69,11 +72,8 @@ async def run_async_migrations() -> None:
 
     """
 
-    connectable = async_engine_from_config(
-        config.get_section(config.config_ini_section, {}),
-        prefix="sqlalchemy.",
-        poolclass=pool.NullPool,
-    )
+    url, connect_args = split_database_url(get_settings().database_url)
+    connectable = create_async_engine(url, poolclass=pool.NullPool, connect_args=connect_args)
 
     async with connectable.connect() as connection:
         await connection.run_sync(do_run_migrations)
